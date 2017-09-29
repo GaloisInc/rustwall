@@ -1,0 +1,7 @@
+[package]
+name = "rustwall"
+version = "0.1.0"
+authors = ["Michal Podhradsky <michal.podhradsky@aggiemail.usu.edu>"]
+
+[dependencies]
+smoltcp = { version = "0.4", default-features = true }
