@@ -1,3 +1,22 @@
+/// Rustwall example
+///
+/// Initialize tap device with:
+///
+///#!/bin/bash
+///sudo ip tuntap add dev tap1 mode tap
+///sudo ip addr add 192.168.69.1/24 broadcast 192.168.69.255 dev tap1
+///sudo ip link set tap1 up
+///
+/// That will create a tap device with IP 192.168.69.1
+/// The rustwall has itself an IP address of 192,168.69.2, so it appears to be on the same network,
+/// but connected over the wire.
+///
+/// We then have a Virtualbox VM with a host-only adapter vboxnet0 with IP 192.168.56.1
+/// In the VM we run a rustsocket helper program, that simulates virtio interface - it uses another
+/// tap device created with the same command as above (IP 192.168.69.1).
+///
+/// Sockets are connected over vboxnet0 and when rustsocket is run, we can forward information as if it was
+/// coming from real device behind the rustwall.
 extern crate smoltcp;
 
 use smoltcp::phy::wait as phy_wait;
@@ -6,7 +25,7 @@ use std::net::UdpSocket;
 use smoltcp::socket::{RawSocket, RawSocketBuffer, RawPacketBuffer, AsSocket, SocketSet};
 use smoltcp::iface::{ArpCache, SliceArpCache, EthernetInterface};
 use smoltcp::wire::{EthernetAddress, IpVersion, IpProtocol, IpAddress, Ipv4Address, Ipv4Packet,
-                    UdpPacket};
+                    UdpPacket, Ipv4Repr, UdpRepr};
 
 use std::os::unix::io::AsRawFd;
 use std::time::Instant;
@@ -91,14 +110,14 @@ pub fn millis_since(startup_time: Instant) -> u64 {
 fn main() {
     let hardware_addr_0 = EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x02]);
 
-    let local_addr = Ipv4Address::new(192, 168, 69, 2);
+    let local_addr = Ipv4Address::new(192, 168, 69, 2); // for VM:(192, 168, 69, 1) 
 
     let (tx_0, rx_0) = mpsc::channel();
     let (tx_1, rx_1) = mpsc::channel();
 
     let cfg_0 = FirewallConfiguration::new(INF_0);
 
-	// FIXME: allow all pass-through
+    // FIXME: allow all pass-through
     //cfg_0.allowed_ports.push(6969);
     //cfg_0.allowed_protocols.push(IpProtocol::Udp);
 
@@ -114,46 +133,48 @@ fn main() {
 
         // bind to an IP address assigned to an existing interface & specific port
         let socket = UdpSocket::bind("192.168.56.1:6666").expect("couldn't bind to address"); // port at local interface
-        socket
-            .connect("192.168.56.101:6667")
-            .expect("connect function failed"); // port at remote interface
+		// would be 6667 for VM
 
-		println!("{} starting",name);
+        println!("{} starting", name);
         loop {
             let data = rx_1.recv().expect("Couldn't receive data");
-            let len = socket.send(data.as_slice()).expect("Couldn't send data");
+            let len = socket
+                .send_to(data.as_slice(), "192.168.56.101:6666") 
+                .expect("Couldn't send data");
             println!("{} Sent {} data.", name, len);
         }
     });
-    
-    
+
+
     // Receiving socket
     // Receives data from the VM interface and passes it to the firewall
     let _ = thread::spawn(move || {
-    		let name = "socketRx";
-    		
+        let name = "socketRx";
+
         // bind to an IP address assigned to an existing interface & specific port
-        let socket = UdpSocket::bind("192.168.56.1:6668").expect("couldn't bind to address");
-        socket
-            .connect("192.168.56.101:6669")
-            .expect("connect function failed");
-            
-        let mut buf = vec![0; 256];
+        let socket = UdpSocket::bind("192.168.56.1:6667").expect("couldn't bind to address");
+        // would be 6666 for VM
         
-        println!("{} starting",name);
+        socket
+            .connect("192.168.56.101:6667")
+            .expect("connect function failed");
+
+        let mut buf = vec![0; 256];
+
+        println!("{} starting", name);
         loop {
             match socket.recv(&mut buf) {
                 Ok(len) => {
-		            println!("{} received {} data.", name, len);
-		            let data = buf[0..len].to_vec();       
-		            tx_0.send(data).expect("Couldn't send data");
+                    println!("{} received {} data.", name, len);
+                    let data = buf[0..len].to_vec();
+                    tx_0.send(data).expect("Couldn't send data");
                 }
                 Err(e) => println!("{} recv function failed: {:?}", name, e),
             }
         }
     });
-    
-    
+
+
 
     th_0.join().expect("Thread 0 error");
     println!("Rustwall terminating.");
@@ -251,10 +272,6 @@ fn thread_iface(iface_name: &str,
                 tx.send(ipv4_packet.into_inner().to_vec()).unwrap();
             } // if socket.can_recv()
 
-        } // raw socket per single loop iteration
-
-        {
-            let socket: &mut RawSocket = sockets.get_mut(raw_handle).as_socket();
 
             // Check if we have a packet to send
             if socket.can_send() {
@@ -263,12 +280,83 @@ fn thread_iface(iface_name: &str,
                     Ok(payload) => {
                         println!("{} Sending data", cfg.name);
 
+                        //println!("data: {:?}", payload);
+
                         // TODO: analyze packet with cfg and either drop/send it
+                        //let ipv4_packet = Ipv4Packet::new(payload);
+                        //println!("dest addr: {}", ipv4_packet.dst_addr());
+                        //println!("src addr: {}", ipv4_packet.src_addr());
+
+                        println!("Payload len = {}", payload.len());
+                        let raw_payload = socket.send(payload.len()).unwrap();
+
+
+                        let ipv4_packet = Ipv4Packet::new(payload.as_slice());
+                        println!("ipv4_packet = {:?}", ipv4_packet);
+                        let ipv4_repr = Ipv4Repr::parse(&ipv4_packet).unwrap();
+                        println!("ipv4_repr = {:?}", ipv4_repr);
+
+
+                        let mut ipv4_packet_tx = Ipv4Packet::new(raw_payload);
+                        ipv4_repr.emit(&mut ipv4_packet_tx);
+                        
+                        
+                        {
+	                        let udp_payload = ipv4_packet_tx.payload_mut();
+	                        println!("udp_payload ={:?}",udp_payload);
+	                        let udp_packet = UdpPacket::new(ipv4_packet.payload());
+	                        println!("udp_packet ={:?}",udp_packet);
+	                        
+	                        let src = IpAddress::Ipv4(ipv4_packet.src_addr());
+	                        let dst = IpAddress::Ipv4(ipv4_packet.dst_addr());
+	                        let udp_repr = UdpRepr::parse(&udp_packet, &src, &dst).unwrap();
+	                        
+	                        let mut udp_packet_tx = UdpPacket::new(udp_payload);
+	                        udp_repr.emit(&mut udp_packet_tx, &src, &dst);
+                        }
+                        
+
+                        /*
+                        {
+                        	let  payload = ipv4_packet_tx.payload_mut();
+                        payload[0] = 0xb1;
+                        payload[1] = 0x97;
+                        payload[2] = 0x1b;
+                        }
+                        */
+
+                        println!("ipv4_packet_tx = {:?}", ipv4_packet_tx);
+
+
+
+                        /*
+                                                print!("Raw payload = [");
+                        for i in 0..payload.len() {
+                            //raw_payload[i] = payload[i];
+                            print!("{:x},",raw_payload[i]);
+                        }
+                        println!("];");
+                        */
 
                         // just send out for now
-                        socket.send_slice(payload.as_slice()).unwrap();
+                        //match socket.send(ipv4_packet.into_inner().len()) {
+                        /*
+                        match socket.send(payload.len()) {
+                        //match socket.send_slice(payload.as_slice()) {
+                        	Ok(raw_payload) => {
+	                        	for i in 0..payload.len() {
+	                        		raw_payload[i] = payload[i];
+	                        	}
+                        	},
+                        	Err(e) => {
+                        		println!("{} Error at socket.send_slice(payload.as_slice(): {}", cfg.name, e);
+                        	}
+                        }
+                        */
                     }
-                    Err(_) => {}
+                    Err(err) => {
+                        println!("{} Error receiving data: {}", cfg.name, err);
+                    }
                 }
             } // if socket.can_send()
         }
@@ -277,8 +365,9 @@ fn thread_iface(iface_name: &str,
         let timestamp = millis_since(startup_time);
 
         let poll_at = iface.poll(&mut sockets, timestamp).expect("poll error");
-        //println!("{} poll_at: {:?}", cfg.name, poll_at);
-        phy_wait(fd, poll_at.map(|at| at.saturating_sub(timestamp))).expect("wait error");
+        println!("{} poll_at: {:?}", cfg.name, poll_at);
+        //phy_wait(fd, poll_at.map(|at| at.saturating_sub(timestamp))).expect("wait error");
+        phy_wait(fd, poll_at).expect("wait error");
 
         //phy_wait(fd, Some(1)).expect("wait error");
 
