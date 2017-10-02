@@ -178,22 +178,21 @@ fn thread_socket_receiver(name: String, // typically SocketReceiiver
 fn main() {
     // logging and options setup
     utils::setup_logging("warn");
-    let (mut opts, mut free) = utils::create_options();
-    utils::add_tap_options(&mut opts, &mut free);
+    let (opts, free) = utils::create_options();
     let mut matches = utils::parse_options(&opts, free);
 
     // iface and socket setup
     let device_name = utils::parse_tap_options(&mut matches);
     println!("device_name {}", device_name);
-    let local_address = Ipv4Address::from_str(&matches.free[0]).expect("invalid address format");
+    let local_address = Ipv4Address::from_str(&matches.free.remove(0)).expect("invalid address format");
     println!("local_address {}", local_address);
-    let vm_iface_addr = Ipv4Address::from_str(&matches.free[0]).expect("invalid address format");
+    let vm_iface_addr = Ipv4Address::from_str(&matches.free.remove(0)).expect("invalid address format");
     println!("vm_iface {}", vm_iface_addr);
-    let vm_address = Ipv4Address::from_str(&matches.free[0]).expect("invalid address format");
+    let vm_address = Ipv4Address::from_str(&matches.free.remove(0)).expect("invalid address format");
     println!("vm_address {}", vm_address);
-    let tx_port = u16::from_str(&matches.free[0]).expect("invalid port format");
+    let tx_port = u16::from_str(&matches.free.remove(0)).expect("invalid port format");
     println!("tx_port {}", tx_port);
-    let rx_port = u16::from_str(&matches.free[0]).expect("invalid port format");
+    let rx_port = u16::from_str(&matches.free.remove(0)).expect("invalid port format");
     println!("rx_port {}", rx_port);
 
     // channels setup
@@ -411,7 +410,7 @@ fn thread_iface(iface_name: &str,
                         */
                     }
                     Err(err) => {
-                        println!("{} Error receiving data: {}", cfg.name, err);
+                        //println!("{} Error receiving data: {}", cfg.name, err);
                     }
                 }
             } // if socket.can_send()
@@ -421,7 +420,7 @@ fn thread_iface(iface_name: &str,
         let timestamp = utils::millis_since(startup_time);
 
         let poll_at = iface.poll(&mut sockets, timestamp).expect("poll error");
-        println!("{} poll_at: {:?}", cfg.name, poll_at);
+        //println!("{} poll_at: {:?}", cfg.name, poll_at);
         //phy_wait(fd, poll_at.map(|at| at.saturating_sub(timestamp))).expect("wait error");
         //phy_wait(fd, poll_at).expect("wait error");
 
