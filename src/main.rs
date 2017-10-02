@@ -17,8 +17,28 @@
 ///
 /// Sockets are connected over vboxnet0 and when rustsocket is run, we can forward information as if it was
 /// coming from real device behind the rustwall.
+///
+// Start simulation with: fgfs --fdm=null --native-fdm=socket,in,30,192.168.69.1,5501,udp --prop:/sim/model/path=Models/Aircraft/paparazzi/minion.xml
+// TODO: better polling
+// TODO: remove the prints
+// TODO: develop some unwanted packets to demonstrate filtering
+// TODO: maybe a sample Rust/Java app that does network communication?
+// TODO: make a pull requets to smoltcp
+#[macro_use]
+extern crate log;
+extern crate env_logger;
+extern crate getopts;
 extern crate smoltcp;
 
+/// Auxilliary tools
+mod utils;
+use std::os::unix::io::AsRawFd;
+use std::time::Instant;
+use std::thread;
+use std::sync::mpsc;
+use std::str::FromStr;
+
+/// Firewall related
 use smoltcp::phy::wait as phy_wait;
 use smoltcp::phy::TapInterface;
 use std::net::UdpSocket;
@@ -27,12 +47,7 @@ use smoltcp::iface::{ArpCache, SliceArpCache, EthernetInterface};
 use smoltcp::wire::{EthernetAddress, IpVersion, IpProtocol, IpAddress, Ipv4Address, Ipv4Packet,
                     UdpPacket, Ipv4Repr, UdpRepr};
 
-use std::os::unix::io::AsRawFd;
-use std::time::Instant;
-use std::thread;
-use std::sync::mpsc;
-
-const INF_0: &str = "tap1";
+const HARDWARE_ADDRESS: EthernetAddress = EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x02]);
 
 /// Configuration struct that holds
 /// data about which packeets to pass
@@ -42,6 +57,7 @@ struct FirewallConfiguration {
     addr_ok_to_recv_from: Vec<Ipv4Address>,
     allowed_ports: Vec<u16>,
     allowed_protocols: Vec<IpProtocol>,
+    hardware_addr: EthernetAddress,
 }
 
 impl FirewallConfiguration {
@@ -52,6 +68,7 @@ impl FirewallConfiguration {
             addr_ok_to_recv_from: vec![],
             allowed_ports: vec![],
             allowed_protocols: vec![],
+            hardware_addr: HARDWARE_ADDRESS,
         }
     }
 
@@ -93,29 +110,98 @@ impl FirewallConfiguration {
 }
 
 
+///
+/// Auxilliary thread - receives data over channel from the main firewall thread
+/// and sends it over socket to the VM
+///
+fn thread_socket_sender(name: String, // typically SocketSender
+                        local_addr: Ipv4Address, // iface connected to VM
+                        remote_addr: Ipv4Address, // address of the VM (from the VM side)
+                        port: u16, // comm port, typically 6666
+                        rx: mpsc::Receiver<Vec<u8>>) {
+    let local_addr = format!("{}:{}", local_addr, port);
+    let remote_addr = format!("{}:{}", remote_addr, port);
+    let socket = UdpSocket::bind(local_addr).expect("couldn't bind to address"); // local interface
+
+    socket
+        .connect(remote_addr)
+        .expect("connect function failed");
+
+    println!("{} starting", name);
+    loop {
+        let data = rx.recv().expect("Couldn't receive data");
+        let len = socket
+            .send(data.as_slice())
+            .expect("Couldn't send data");
+        println!("{} Sent {} data.", name, len);
+    }
+}
+
 
 ///
-/// helper function
+/// Auxilliary thread - receives data over channel from the main firewall thread
+/// and sends it over socket to the VM
 ///
-pub fn millis_since(startup_time: Instant) -> u64 {
-    let duration = Instant::now().duration_since(startup_time);
-    let duration_ms = (duration.as_secs() * 1000) + (duration.subsec_nanos() / 1000000) as u64;
-    duration_ms
+fn thread_socket_receiver(name: String, // typically SocketReceiiver
+                          local_addr: Ipv4Address, // iface connected to VM
+                          remote_addr: Ipv4Address, // address of the VM (from the VM side)
+                          port: u16, // comm port, typically 6667
+                          tx: mpsc::Sender<Vec<u8>>) {
+    let local_addr = format!("{}:{}", local_addr, port);
+    let remote_addr = format!("{}:{}", remote_addr, port);
+    let socket = UdpSocket::bind(local_addr).expect("couldn't bind to address"); // local interface
+
+    socket
+        .connect(remote_addr)
+        .expect("connect function failed");
+
+    let mut buf = vec![0; 1024];
+
+    println!("{} starting", name);
+    loop {
+        match socket.recv(&mut buf) {
+            Ok(len) => {
+                println!("{} received {} data.", name, len);
+                let data = buf[0..len].to_vec();
+                tx.send(data).expect("Couldn't send data");
+            }
+            Err(e) => println!("{} recv function failed: {:?}", name, e),
+        }
+    }
 }
+
 
 
 ///
 /// Main function
 ///
 fn main() {
-    let hardware_addr_0 = EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x02]);
+    // logging and options setup
+    utils::setup_logging("warn");
+    let (mut opts, mut free) = utils::create_options();
+    utils::add_tap_options(&mut opts, &mut free);
+    let mut matches = utils::parse_options(&opts, free);
 
-    let local_addr = Ipv4Address::new(192, 168, 69, 2); // for VM:(192, 168, 69, 1) 
+    // iface and socket setup
+    let device_name = utils::parse_tap_options(&mut matches);
+    println!("device_name {}", device_name);
+    let local_address = Ipv4Address::from_str(&matches.free[0]).expect("invalid address format");
+    println!("local_address {}", local_address);
+    let vm_iface_addr = Ipv4Address::from_str(&matches.free[0]).expect("invalid address format");
+    println!("vm_iface {}", vm_iface_addr);
+    let vm_address = Ipv4Address::from_str(&matches.free[0]).expect("invalid address format");
+    println!("vm_address {}", vm_address);
+    let tx_port = u16::from_str(&matches.free[0]).expect("invalid port format");
+    println!("tx_port {}", tx_port);
+    let rx_port = u16::from_str(&matches.free[0]).expect("invalid port format");
+    println!("rx_port {}", rx_port);
 
+    // channels setup
     let (tx_0, rx_0) = mpsc::channel();
     let (tx_1, rx_1) = mpsc::channel();
 
-    let cfg_0 = FirewallConfiguration::new(INF_0);
+    // actual firewall configuration
+    let cfg_0 = FirewallConfiguration::new(&device_name);
 
     // FIXME: allow all pass-through
     //cfg_0.allowed_ports.push(6969);
@@ -123,60 +209,31 @@ fn main() {
 
     println!("Rustwall starting.");
 
-    let th_0 =
-        thread::spawn(move || thread_iface(INF_0, hardware_addr_0, local_addr, rx_0, tx_1, cfg_0));
+    let th_0 = thread::spawn(move || thread_iface(&device_name, local_address, rx_0, tx_1, cfg_0));
 
     // Sending socket
     // Passes data to the VM interface
-    let _ = thread::spawn(move || {
-        let name = "socketTx";
-
-        // bind to an IP address assigned to an existing interface & specific port
-        let socket = UdpSocket::bind("192.168.56.1:6666").expect("couldn't bind to address"); // port at local interface
-		// would be 6667 for VM
-
-        println!("{} starting", name);
-        loop {
-            let data = rx_1.recv().expect("Couldn't receive data");
-            let len = socket
-                .send_to(data.as_slice(), "192.168.56.101:6666") 
-                .expect("Couldn't send data");
-            println!("{} Sent {} data.", name, len);
-        }
-    });
-
+    let th_tx = thread::spawn(move || {
+                                  thread_socket_sender(String::from("SocketSender"),
+                                                       vm_iface_addr,
+                                                       vm_address,
+                                                       tx_port,
+                                                       rx_1)
+                              });
 
     // Receiving socket
     // Receives data from the VM interface and passes it to the firewall
-    let _ = thread::spawn(move || {
-        let name = "socketRx";
-
-        // bind to an IP address assigned to an existing interface & specific port
-        let socket = UdpSocket::bind("192.168.56.1:6667").expect("couldn't bind to address");
-        // would be 6666 for VM
-        
-        socket
-            .connect("192.168.56.101:6667")
-            .expect("connect function failed");
-
-        let mut buf = vec![0; 256];
-
-        println!("{} starting", name);
-        loop {
-            match socket.recv(&mut buf) {
-                Ok(len) => {
-                    println!("{} received {} data.", name, len);
-                    let data = buf[0..len].to_vec();
-                    tx_0.send(data).expect("Couldn't send data");
-                }
-                Err(e) => println!("{} recv function failed: {:?}", name, e),
-            }
-        }
-    });
-
-
+    let th_rx = thread::spawn(move || {
+                                  thread_socket_receiver(String::from("SocketReceiver"),
+                                                         vm_iface_addr,
+                                                         vm_address,
+                                                         rx_port,
+                                                         tx_0)
+                              });
 
     th_0.join().expect("Thread 0 error");
+    th_tx.join().expect("SocketSender error");
+    th_rx.join().expect("SocketReceiver error");
     println!("Rustwall terminating.");
 }
 
@@ -185,7 +242,6 @@ fn main() {
 /// Interface thread
 ///
 fn thread_iface(iface_name: &str,
-                hardware_addr: EthernetAddress,
                 ipaddr: Ipv4Address,
                 rx: mpsc::Receiver<Vec<u8>>,
                 tx: mpsc::Sender<Vec<u8>>,
@@ -193,11 +249,11 @@ fn thread_iface(iface_name: &str,
     let startup_time = Instant::now();
 
     let device = TapInterface::new(iface_name).unwrap();
-    //let device = PhySocket::new(iface_name).unwrap();
+
     let fd = device.as_raw_fd();
 
-    let raw_rx_buffer = RawSocketBuffer::new(vec![RawPacketBuffer::new(vec![0; 256])]);
-    let raw_tx_buffer = RawSocketBuffer::new(vec![RawPacketBuffer::new(vec![0; 256])]);
+    let raw_rx_buffer = RawSocketBuffer::new(vec![RawPacketBuffer::new(vec![0; 1024])]);
+    let raw_tx_buffer = RawSocketBuffer::new(vec![RawPacketBuffer::new(vec![0; 1024])]);
     let raw_socket = RawSocket::new(IpVersion::Ipv4,
                                     IpProtocol::Udp,
                                     raw_rx_buffer,
@@ -208,7 +264,7 @@ fn thread_iface(iface_name: &str,
     println!("{} Creating interface {}", cfg.name, iface_name);
     let mut iface = EthernetInterface::new(Box::new(device),
                                            Box::new(arp_cache) as Box<ArpCache>,
-                                           hardware_addr,
+                                           cfg.hardware_addr,
                                            [IpAddress::from(ipaddr)]);
 
     let mut sockets = SocketSet::new(vec![]);
@@ -299,22 +355,22 @@ fn thread_iface(iface_name: &str,
 
                         let mut ipv4_packet_tx = Ipv4Packet::new(raw_payload);
                         ipv4_repr.emit(&mut ipv4_packet_tx);
-                        
-                        
+
+
                         {
-	                        let udp_payload = ipv4_packet_tx.payload_mut();
-	                        println!("udp_payload ={:?}",udp_payload);
-	                        let udp_packet = UdpPacket::new(ipv4_packet.payload());
-	                        println!("udp_packet ={:?}",udp_packet);
-	                        
-	                        let src = IpAddress::Ipv4(ipv4_packet.src_addr());
-	                        let dst = IpAddress::Ipv4(ipv4_packet.dst_addr());
-	                        let udp_repr = UdpRepr::parse(&udp_packet, &src, &dst).unwrap();
-	                        
-	                        let mut udp_packet_tx = UdpPacket::new(udp_payload);
-	                        udp_repr.emit(&mut udp_packet_tx, &src, &dst);
+                            let udp_payload = ipv4_packet_tx.payload_mut();
+                            println!("udp_payload ={:?}", udp_payload);
+                            let udp_packet = UdpPacket::new(ipv4_packet.payload());
+                            println!("udp_packet ={:?}", udp_packet);
+
+                            let src = IpAddress::Ipv4(ipv4_packet.src_addr());
+                            let dst = IpAddress::Ipv4(ipv4_packet.dst_addr());
+                            let udp_repr = UdpRepr::parse(&udp_packet, &src, &dst).unwrap();
+
+                            let mut udp_packet_tx = UdpPacket::new(udp_payload);
+                            udp_repr.emit(&mut udp_packet_tx, &src, &dst);
                         }
-                        
+
 
                         /*
                         {
@@ -362,14 +418,14 @@ fn thread_iface(iface_name: &str,
         }
 
 
-        let timestamp = millis_since(startup_time);
+        let timestamp = utils::millis_since(startup_time);
 
         let poll_at = iface.poll(&mut sockets, timestamp).expect("poll error");
         println!("{} poll_at: {:?}", cfg.name, poll_at);
         //phy_wait(fd, poll_at.map(|at| at.saturating_sub(timestamp))).expect("wait error");
-        phy_wait(fd, poll_at).expect("wait error");
+        //phy_wait(fd, poll_at).expect("wait error");
 
-        //phy_wait(fd, Some(1)).expect("wait error");
+        phy_wait(fd, Some(1)).expect("wait error");
 
         //let poll_at = iface.poll(&mut sockets, timestamp).expect("poll error");
         //let resume_at = [poll_at, Some(send_at)].iter().flat_map(|x| *x).min();
