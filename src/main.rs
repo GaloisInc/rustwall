@@ -18,6 +18,40 @@
 /// Sockets are connected over vboxnet0 and when rustsocket is run, we can forward information as if it was
 /// coming from real device behind the rustwall.
 ///
+/// ## Example
+///
+/// On the host side: 
+/// - tap1 IP: 192.168.69.1
+/// - firewall IP (simulating a node on the same network as tap1): 192.168.69.2
+/// - iface connected to VM: 192.168.56.1
+/// - VM IP (on the same network as the iface above): 192.168.56.101
+/// - TX port (data from firewall->VM): 6666
+/// - RX port (from VM->firewall): 6667 
+/// ```
+/// cargo run -- tap1  192.168.69.2 192.168.56.1 192.168.56.101 6666 6667
+/// ```
+///
+/// On the client side:
+/// NOTE: tap1 has IP 192.168.69.2 (that's the IP of the node)
+/// ```
+/// cargo run -- tap1  192.168.69.1 192.168.56.101 192.168.56.1 6667 6666
+/// ``` 
+///
+/// Start simulation at host with (because the FlightGear is runnig at the host which has an address 192.168.69.1): 
+/// ```
+/// fgfs --fdm=null --native-fdm=socket,in,30,192.168.69.1,5501,udp
+/// ```
+///
+/// And on the client side run paparazzi sim with: 
+/// ```
+/// pprzsim-launch ... -f 192.168.69.1 ...
+/// ```
+/// so it sends data to the host machine.
+///
+///
+///
+/// TODO 1: check the cheksums on the packets 
+/// TODO 2: check the fragmentation of the packets
 // Start simulation with: fgfs --fdm=null --native-fdm=socket,in,30,192.168.69.1,5501,udp --prop:/sim/model/path=Models/Aircraft/paparazzi/minion.xml
 // TODO: better polling
 // TODO: remove the prints
@@ -335,32 +369,22 @@ fn thread_iface(iface_name: &str,
                     Ok(payload) => {
                         println!("{} Sending data", cfg.name);
 
-                        //println!("data: {:?}", payload);
-
-                        // TODO: analyze packet with cfg and either drop/send it
-                        //let ipv4_packet = Ipv4Packet::new(payload);
-                        //println!("dest addr: {}", ipv4_packet.dst_addr());
-                        //println!("src addr: {}", ipv4_packet.src_addr());
-
                         println!("Payload len = {}", payload.len());
                         let raw_payload = socket.send(payload.len()).unwrap();
 
-
                         let ipv4_packet = Ipv4Packet::new(payload.as_slice());
-                        println!("ipv4_packet = {:?}", ipv4_packet);
+                        //println!("ipv4_packet = {:?}", ipv4_packet);
                         let ipv4_repr = Ipv4Repr::parse(&ipv4_packet).unwrap();
-                        println!("ipv4_repr = {:?}", ipv4_repr);
-
+                        //println!("ipv4_repr = {:?}", ipv4_repr);
 
                         let mut ipv4_packet_tx = Ipv4Packet::new(raw_payload);
                         ipv4_repr.emit(&mut ipv4_packet_tx);
 
-
                         {
                             let udp_payload = ipv4_packet_tx.payload_mut();
-                            println!("udp_payload ={:?}", udp_payload);
+                            //println!("udp_payload ={:?}", udp_payload);
                             let udp_packet = UdpPacket::new(ipv4_packet.payload());
-                            println!("udp_packet ={:?}", udp_packet);
+                            //println!("udp_packet ={:?}", udp_packet);
 
                             let src = IpAddress::Ipv4(ipv4_packet.src_addr());
                             let dst = IpAddress::Ipv4(ipv4_packet.dst_addr());
@@ -369,47 +393,8 @@ fn thread_iface(iface_name: &str,
                             let mut udp_packet_tx = UdpPacket::new(udp_payload);
                             udp_repr.emit(&mut udp_packet_tx, &src, &dst);
                         }
-
-
-                        /*
-                        {
-                        	let  payload = ipv4_packet_tx.payload_mut();
-                        payload[0] = 0xb1;
-                        payload[1] = 0x97;
-                        payload[2] = 0x1b;
-                        }
-                        */
-
-                        println!("ipv4_packet_tx = {:?}", ipv4_packet_tx);
-
-
-
-                        /*
-                                                print!("Raw payload = [");
-                        for i in 0..payload.len() {
-                            //raw_payload[i] = payload[i];
-                            print!("{:x},",raw_payload[i]);
-                        }
-                        println!("];");
-                        */
-
-                        // just send out for now
-                        //match socket.send(ipv4_packet.into_inner().len()) {
-                        /*
-                        match socket.send(payload.len()) {
-                        //match socket.send_slice(payload.as_slice()) {
-                        	Ok(raw_payload) => {
-	                        	for i in 0..payload.len() {
-	                        		raw_payload[i] = payload[i];
-	                        	}
-                        	},
-                        	Err(e) => {
-                        		println!("{} Error at socket.send_slice(payload.as_slice(): {}", cfg.name, e);
-                        	}
-                        }
-                        */
                     }
-                    Err(err) => {
+                    Err(_err) => {
                         //println!("{} Error receiving data: {}", cfg.name, err);
                     }
                 }
@@ -419,7 +404,7 @@ fn thread_iface(iface_name: &str,
 
         let timestamp = utils::millis_since(startup_time);
 
-        let poll_at = iface.poll(&mut sockets, timestamp).expect("poll error");
+        let _poll_at = iface.poll(&mut sockets, timestamp).expect("poll error");
         //println!("{} poll_at: {:?}", cfg.name, poll_at);
         //phy_wait(fd, poll_at.map(|at| at.saturating_sub(timestamp))).expect("wait error");
         //phy_wait(fd, poll_at).expect("wait error");

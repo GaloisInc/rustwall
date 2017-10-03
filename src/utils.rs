@@ -10,7 +10,7 @@ use log::{LogLevel, LogLevelFilter, LogRecord};
 use env_logger::LogBuilder;
 use getopts::{Options, Matches};
 
-use smoltcp::phy::{Device, EthernetTracer, FaultInjector, TapInterface};
+use smoltcp::phy::{Device, EthernetTracer, FaultInjector};
 use smoltcp::phy::{PcapWriter, PcapSink, PcapMode, PcapLinkType};
 
 pub fn setup_logging_with_clock<F>(filter: &str, since_startup: F)
