@@ -20,13 +20,13 @@
 ///
 /// ## Example
 ///
-/// On the host side: 
+/// On the host side:
 /// - tap1 IP: 192.168.69.1
 /// - firewall IP (simulating a node on the same network as tap1): 192.168.69.2
 /// - iface connected to VM: 192.168.56.1
 /// - VM IP (on the same network as the iface above): 192.168.56.101
 /// - TX port (data from firewall->VM): 6666
-/// - RX port (from VM->firewall): 6667 
+/// - RX port (from VM->firewall): 6667
 /// ```
 /// cargo run -- tap1  192.168.69.2 192.168.56.1 192.168.56.101 6666 6667
 /// ```
@@ -35,14 +35,14 @@
 /// NOTE: tap1 has IP 192.168.69.2 (that's the IP of the node)
 /// ```
 /// cargo run -- tap1  192.168.69.1 192.168.56.101 192.168.56.1 6667 6666
-/// ``` 
+/// ```
 ///
-/// Start simulation at host with (because the FlightGear is runnig at the host which has an address 192.168.69.1): 
+/// Start simulation at host with (because the FlightGear is runnig at the host which has an address 192.168.69.1):
 /// ```
 /// fgfs --fdm=null --native-fdm=socket,in,30,192.168.69.1,5501,udp
 /// ```
 ///
-/// And on the client side run paparazzi sim with: 
+/// And on the client side run paparazzi sim with:
 /// ```
 /// pprzsim-launch ... -f 192.168.69.1 ...
 /// ```
@@ -50,8 +50,11 @@
 ///
 ///
 ///
-/// TODO 1: check the cheksums on the packets 
-/// TODO 2: check the fragmentation of the packets
+/// TODO: check the fragmentation of the packets (what exactly?)
+/// TODO: Multicast: add multicast MAC addresses via network card driver, then multicast IP address has to be
+/// added to the whitelisted IP's dynamically (IGMP protocol). See notes.
+///
+/// CLOSED: Checksums and preamble of the ethernet frame is consumed by the network device and is not visible for the OS.
 // Start simulation with: fgfs --fdm=null --native-fdm=socket,in,30,192.168.69.1,5501,udp --prop:/sim/model/path=Models/Aircraft/paparazzi/minion.xml
 // TODO: better polling
 // TODO: remove the prints
@@ -81,7 +84,7 @@ use smoltcp::iface::{ArpCache, SliceArpCache, EthernetInterface};
 use smoltcp::wire::{EthernetAddress, IpVersion, IpProtocol, IpAddress, Ipv4Address, Ipv4Packet,
                     UdpPacket, Ipv4Repr, UdpRepr};
 
-const HARDWARE_ADDRESS: EthernetAddress = EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x02]);
+const HARDWARE_ADDRESS: EthernetAddress = EthernetAddress([0x03, 0x00, 0x00, 0x00, 0x00, 0x02]);
 
 /// Configuration struct that holds
 /// data about which packeets to pass
@@ -164,9 +167,7 @@ fn thread_socket_sender(name: String, // typically SocketSender
     println!("{} starting", name);
     loop {
         let data = rx.recv().expect("Couldn't receive data");
-        let len = socket
-            .send(data.as_slice())
-            .expect("Couldn't send data");
+        let len = socket.send(data.as_slice()).expect("Couldn't send data");
         println!("{} Sent {} data.", name, len);
     }
 }
@@ -218,11 +219,14 @@ fn main() {
     // iface and socket setup
     let device_name = utils::parse_tap_options(&mut matches);
     println!("device_name {}", device_name);
-    let local_address = Ipv4Address::from_str(&matches.free.remove(0)).expect("invalid address format");
+    let local_address = Ipv4Address::from_str(&matches.free.remove(0))
+        .expect("invalid address format");
     println!("local_address {}", local_address);
-    let vm_iface_addr = Ipv4Address::from_str(&matches.free.remove(0)).expect("invalid address format");
+    let vm_iface_addr = Ipv4Address::from_str(&matches.free.remove(0))
+        .expect("invalid address format");
     println!("vm_iface {}", vm_iface_addr);
-    let vm_address = Ipv4Address::from_str(&matches.free.remove(0)).expect("invalid address format");
+    let vm_address = Ipv4Address::from_str(&matches.free.remove(0))
+        .expect("invalid address format");
     println!("vm_address {}", vm_address);
     let tx_port = u16::from_str(&matches.free.remove(0)).expect("invalid port format");
     println!("tx_port {}", tx_port);
@@ -315,8 +319,15 @@ fn thread_iface(iface_name: &str,
                 let payload = socket.recv().unwrap();
                 //println!("{} raw packet: {:?}", cfg.name, payload);
 
-                // first check source and destination IP
                 let ipv4_packet = Ipv4Packet::new(payload);
+
+                // first verify IPv4 header checksum
+                if !ipv4_packet.verify_checksum() {
+                    println!("{} Warning: IP header checksum failed", cfg.name);
+                    continue;
+                }
+
+                // check source and destination IP
                 if !cfg.is_ok_to_recv_from(ipv4_packet.src_addr()) {
                     println!("{} Warning: Source IP: {:?} is not allowed",
                              cfg.name,
@@ -353,6 +364,13 @@ fn thread_iface(iface_name: &str,
                     println!("{} Warning: Destination port: {} is not allowed.",
                              cfg.name,
                              packet.dst_port());
+                    continue;
+                }
+
+                // check the UDP checksum
+                if !packet.verify_checksum(&IpAddress::Ipv4(ipv4_packet.src_addr()),
+                                           &IpAddress::Ipv4(ipv4_packet.dst_addr())) {
+                    println!("{} Warning: UDP header checksum failed", cfg.name);
                     continue;
                 }
 
@@ -404,7 +422,7 @@ fn thread_iface(iface_name: &str,
 
         let timestamp = utils::millis_since(startup_time);
 
-        let _poll_at = iface.poll(&mut sockets, timestamp).expect("poll error");
+        let _poll_at = iface.poll(&mut sockets, timestamp); // ignore the errors (or perhaps log them)
         //println!("{} poll_at: {:?}", cfg.name, poll_at);
         //phy_wait(fd, poll_at.map(|at| at.saturating_sub(timestamp))).expect("wait error");
         //phy_wait(fd, poll_at).expect("wait error");
