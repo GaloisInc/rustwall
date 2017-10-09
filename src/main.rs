@@ -84,7 +84,7 @@ use smoltcp::iface::{ArpCache, SliceArpCache, EthernetInterface};
 use smoltcp::wire::{EthernetAddress, IpVersion, IpProtocol, IpAddress, Ipv4Address, Ipv4Packet,
                     UdpPacket, Ipv4Repr, UdpRepr};
 
-const HARDWARE_ADDRESS: EthernetAddress = EthernetAddress([0x03, 0x00, 0x00, 0x00, 0x00, 0x02]);
+const HARDWARE_ADDRESS: EthernetAddress = EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x02]);
 
 /// Configuration struct that holds
 /// data about which packeets to pass

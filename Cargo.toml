@@ -4,8 +4,7 @@ version = "0.1.0"
 authors = ["Michal Podhradsky <michal.podhradsky@aggiemail.usu.edu>"]
 
 [dependencies]
-#smoltcp = { version = "0.4", default-features = true }
-smoltcp = {git="https://github.com/podhrmic/smoltcp", default-features = true}
+smoltcp = { version = "0.4", default-features = true }
 log = "0.3"
 env_logger = "0.4"
 getopts = "0.2"
