@@ -119,9 +119,29 @@ int main() {
 
   client_mac(&b1, &b2, &b3, &b4, &b5, &b6);
 
-  int len = 32;
-  printf("client_tx returned %u bytes\n", client_tx(len));
+  printf("Initializing buffer\n");
+  from_ethdriver_data.content[0] = 41;
+  from_ethdriver_data.content[1] = 44;
+  from_ethdriver_data.content[2] = 47;
+  from_ethdriver_data.content[3] = 55;
+  from_ethdriver_data.content[4] = '\0';
 
+  //char* c = (char*)client_buf_1;
+  //printf("c = %u\n",*c);
+
+  printf("C my slice[0] = %u\n",from_ethdriver_data.content[0]);
+  printf("C my slice[1] = %u\n",from_ethdriver_data.content[1]);
+  printf("C my slice[2] = %u\n",from_ethdriver_data.content[2]);
+  printf("C my slice[3] = %u\n",from_ethdriver_data.content[3]);
+  printf("C my slice[4] = %u\n",from_ethdriver_data.content[4]);
+
+  int len = 32;
+  //printf("client_tx returned %u bytes\n", client_tx(len));
+
+  printf("C passing len = %i\n",len);
+  printf("C len address = %p\n",&len);
+  printf("C ethdriver_buf address = %p\n",ethdriver_buf);
+  printf("C from_ethdriver_data address = %p\n",&from_ethdriver_data);
   int returnval = client_rx(&len);
   printf("client_rx received %u bytes with return value %i\n", len, returnval);
 
