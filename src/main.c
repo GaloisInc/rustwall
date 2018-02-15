@@ -4,6 +4,18 @@
 #include <stdio.h>
 #include <stdint.h>
 
+/*
+// Stubs for the external firewall calls
+void packet_in(uint32_t src_addr, uint16_t src_port,
+            uint32_t dest_addr, uint16_t dest_port,
+      uint16_t payload_len, void *payload);
+
+void packet_out(uint32_t src_addr, uint16_t src_port,
+              uint32_t dest_addr, uint16_t dest_port,
+          uint16_t payload_len, void *payload);
+*/
+
+
 /**
  * A helper define to make this look more like an actual seL4 file
  */
@@ -17,9 +29,11 @@ extern void ethdriver_has_data_callback(seL4_Word badge);
 /**
  * Dummy version
  * Normally sends `len` data from `ethdriver_buf`
+ * Returns -1 in case of an error, and probably 0 if all OK
  */
 int ethdriver_tx(int len) {
-  return len;
+  (void)len;
+  return 0;
 }
 
 /**

@@ -31,8 +31,7 @@ pub extern "C" fn client_mac(b1: &mut u8, b2: &mut u8, b3: &mut u8, b4: &mut u8,
 }
 
 /// transmit `len` bytes from `client_buf` to `ethdriver_buf`
-/// returns number of transmitted bytes
-/// int client_tx(int len)
+/// return -1 if some error happened, other values are OK (typically it is 0) [
 #[no_mangle]
 pub extern "C" fn client_tx(len: i32) -> i32 {
 	unsafe { memcpy(ethdriver_buf, client_buf(1), len as usize);}
