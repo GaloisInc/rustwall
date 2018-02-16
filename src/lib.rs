@@ -11,6 +11,40 @@ use libc::memcpy;
 use std::slice;
 use smoltcp::wire::Ipv4Packet;
 
+static CONFIG_STR: &'static str = include_str!("../config.ini");
+use std::sync::{Arc, Mutex, Once, ONCE_INIT};
+use std::mem;
+
+#[derive(Clone)]
+struct SingletonReader {
+    // Since we will be used in many threads, we need to protect
+    // concurrent access
+    inner: Arc<Mutex<&'static str>>,
+}
+
+fn singleton() -> SingletonReader {
+    // Initialize it to a null value
+    static mut SINGLETON: *const SingletonReader = 0 as *const SingletonReader;
+    static ONCE: Once = ONCE_INIT;
+
+    unsafe {
+        ONCE.call_once(|| {
+            // do some parsing of the config here
+
+            // Make it
+            let singleton = SingletonReader {
+                inner: Arc::new(Mutex::new(CONFIG_STR)),
+            };
+
+            // Put it in the heap so it can outlive this call
+            SINGLETON = mem::transmute(Box::new(singleton));
+        });
+
+        // Now we give out a copy of the data that is safe to use concurrently.
+        (*SINGLETON).clone()
+    }
+}
+
 extern "C" {
     static ethdriver_buf: *mut c_void;
     //static ethdriver_buf: *mut u8;
@@ -39,6 +73,11 @@ pub extern "C" fn client_mac(
         "client_mac: b1={:?}, b2={:?}, b3={:?}, b4={:?}, b5={:?}, b6={:?}",
         b1, b2, b3, b4, b5, b6
     );
+
+    let s = singleton();
+    let data = s.inner.lock().unwrap();
+    println!("It is: {}", *data);
+
     unsafe {
         ethdriver_mac(b1, b2, b3, b4, b5, b6);
     }
@@ -75,7 +114,7 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
             return ethdriver_tx(len);
         }
     } else {
-    	// checks failed, no packet transmitted
+        // checks failed, no packet transmitted
         return -1;
     }
 }
@@ -112,9 +151,11 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
                 memcpy(client_buf(1), ethdriver_buf, *len as usize);
             }
         } else {
-        	// checks failed, no packet received
-        	unsafe { *len = 0; }
-        	result = -1;
+            // checks failed, no packet received
+            unsafe {
+                *len = 0;
+            }
+            result = -1;
         }
     }
     return result;
@@ -128,8 +169,6 @@ pub extern "C" fn ethdriver_has_data_callback(_badge: u32) {
         client_emit(1);
     }
 }
-
-
 
 /// Perform checks on an outgoing packet
 /// returns `true` if the packet is OK to be sent
