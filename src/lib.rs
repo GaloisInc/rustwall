@@ -2,7 +2,7 @@
 ///
 /// Rust version of Firewall camkes component
 /// see `firewall.c` for the original C version
-/// Original source: https://github.com/seL4/camkes-vm/tree/master/components/Firewall
+/// Original source: `https://github.com/seL4/camkes-vm/tree/master/components/Firewall`
 ///
 extern crate libc;
 extern crate smoltcp;
@@ -59,7 +59,7 @@ extern "C" {
 }
 
 /// get eth device's MAC address
-/// void client_mac(uint8_t *b1, uint8_t *b2, uint8_t *b3, uint8_t *b4, uint8_t *b5, uint8_t *b6)
+/// `void client_mac(uint8_t *b1, uint8_t *b2, uint8_t *b3, uint8_t *b4, uint8_t *b5, uint8_t *b6)`
 #[no_mangle]
 pub extern "C" fn client_mac(
     b1: &mut u8,
@@ -88,7 +88,7 @@ pub extern "C" fn client_mac(
 ///
 /// 1. copy from client buffer into an interim buffer
 /// 2. construct a IP (v4?) packet and perform checks
-/// 3. if all good, copy over to ethdriver_buf
+/// 3. if all good, copy over to `ethdriver_buf`
 /// Bonus: call the external firewall function
 #[no_mangle]
 pub extern "C" fn client_tx(len: i32) -> i32 {
@@ -111,11 +111,11 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
         unsafe {
             memcpy(ethdriver_buf, client_buf(1), len as usize);
             // transmit and return result
-            return ethdriver_tx(len);
+            ethdriver_tx(len)
         }
     } else {
         // checks failed, no packet transmitted
-        return -1;
+        -1
     }
 }
 
@@ -152,13 +152,11 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
             }
         } else {
             // checks failed, no packet received
-            unsafe {
-                *len = 0;
-            }
+            unsafe { *len = 0; }
             result = -1;
         }
     }
-    return result;
+    result
 }
 
 /// Event callback I believe
@@ -174,12 +172,12 @@ pub extern "C" fn ethdriver_has_data_callback(_badge: u32) {
 /// returns `true` if the packet is OK to be sent
 fn check_packet_out(_ipv4_packet: Ipv4Packet<&[u8]>) -> bool {
     // TODO: Dummy for now
-    return true;
+    true
 }
 
 /// Perform checks on an incoming packet
 /// returns `true` if the packet is OK to be received
 fn check_packet_in(_ipv4_packet: Ipv4Packet<&[u8]>) -> bool {
     // TODO: Dummy for now
-    return true;
+    true
 }
