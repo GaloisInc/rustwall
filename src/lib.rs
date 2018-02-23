@@ -1,4 +1,5 @@
 #![feature(libc)]
+//#![deny(unused)]
 ///
 /// Rust version of Firewall camkes component
 /// see `firewall.c` for the original C version
@@ -6,11 +7,13 @@
 ///
 extern crate libc;
 extern crate smoltcp;
-use libc::c_void;
-use libc::memcpy;
+use libc::{c_void,memcpy};
 use std::slice;
-use smoltcp::wire::Ipv4Packet;
+use std::io::{Error, ErrorKind};
 
+use smoltcp::phy::Sel4Device;
+
+/*
 static CONFIG_STR: &'static str = include_str!("../config.ini");
 use std::sync::{Arc, Mutex, Once, ONCE_INIT};
 use std::mem;
@@ -44,18 +47,169 @@ fn singleton() -> SingletonReader {
         (*SINGLETON).clone()
     }
 }
+*/
 
 extern "C" {
+    // to match C signatures
     static ethdriver_buf: *mut c_void;
-    //static ethdriver_buf: *mut u8;
     fn ethdriver_mac(b1: *mut u8, b2: *mut u8, b3: *mut u8, b4: *mut u8, b5: *mut u8, b6: *mut u8);
     fn ethdriver_tx(len: i32) -> i32;
     fn ethdriver_rx(len: *mut i32) -> i32;
 
-    /// For accessing client's buffer
+    // For accessing client's buffer
     fn client_buf(cliend_id: u32) -> *mut c_void;
-    //fn client_buf(cliend_id: u32) -> *mut u8;
     fn client_emit(badge: u32);
+}
+
+/// A backend for smoltcp, to be called from its `phy` module
+/// Transmits a slice from the client application by copying data
+/// into `ethdriver_buf` and consequently calling `ethdriver_tx()`
+/// Returns either number of transmitted bytes or an error
+fn sel4_eth_transmit(buf: &mut [u8]) -> Result<i32, std::io::Error> {
+    unsafe {
+        let local_buf_ptr = std::mem::transmute::<*mut u8, *mut c_void>(buf.as_mut_ptr());
+        assert!(!ethdriver_buf.is_null());
+        memcpy(ethdriver_buf, local_buf_ptr, buf.len());
+        match ethdriver_tx(buf.len() as i32) {
+            -1 => Err(Error::new(ErrorKind::Other, "ethdriver_tx error")),
+            _ => Ok(buf.len() as i32),
+        }
+    }
+}
+
+/// A backend for smoltcp, to be called from its `phy` module
+/// Attempt to receive data from the ethernet driver
+/// Call `ethdriver_rx` and cast the results.
+/// Returns either a vector of received bytes, or an error
+fn sel4_eth_receive() -> Result<Vec<u8>, std::io::Error> {
+    let mut len = 0;
+    unsafe {
+        if ethdriver_rx(&mut len) == -1 {
+            return Err(Error::new(ErrorKind::Other, "ethdriver_rx error"));
+        }
+
+        assert!(!ethdriver_buf.is_null());
+        // create a slice of length `len` from `ethdriver_buf`
+        let local_buf_ptr = std::mem::transmute::<*mut c_void, *mut u8>(ethdriver_buf);
+        let slice = slice::from_raw_parts(local_buf_ptr, len as usize);
+
+        // instead of dealing with the borrow checker, copy slice in to a vector
+        let mut vec = Vec::new();
+        vec.extend_from_slice(slice);
+        Ok(vec)
+    }
+}
+
+/// To be called from `client_tx`
+/// Coverts client data into `Vec<u8>` and returns it.
+/// The vector can be empty.
+fn sel4_client_transmute(len: usize) -> Vec<u8> {
+    unsafe {
+        assert!(!client_buf(1).is_null());
+        // create a slice of length `len` from `client_buf`
+        let local_buf_ptr = std::mem::transmute::<*mut c_void, *mut u8>(client_buf(1));
+        let slice = slice::from_raw_parts(local_buf_ptr, len);
+
+        // instead of dealing with the borrow checker, copy the slice in to a vector
+        let mut vec = Vec::new();
+        vec.extend_from_slice(slice);
+        vec
+    }
+}
+
+/// To be called from camkes VM app.
+/// Transmits `len` bytes from `client_buf` to `ethdriver_buf`.
+/// Returns -1 if some error happens, other values are OK (typically it is 0).
+/// Expects raw ethernet frames.
+///
+/// 1. copy client data
+/// 2. construct an ethernet frame and perform checks
+/// 3. if all good, then transnmit
+#[no_mangle]
+pub extern "C" fn client_tx(len: i32) -> i32 {
+    assert!(len >= 0);
+    // get data to transmit as a vector
+    let mut tx_data = sel4_client_transmute(len as usize);
+
+    // perform checks
+    if check_frame_out(tx_data.as_mut()) {
+        // all OK, pass data to ethdriver's transmit buffer
+        match sel4_eth_transmit(tx_data.as_mut_slice()) {
+            Ok(_) => 0,
+            Err(e) => {
+                println!("sel4_eth_transmit Error: {}", e);
+                -1
+            }
+        }
+    } else {
+        // checks failed, no packet transmitted
+        -1
+    }
+}
+
+/// To be called from camkes VM app.
+/// Receives `len` bytes of data into `client_buf`.
+/// Returns -1 if some error happens, other values are OK (typically it is 0).
+/// Returns raw ethernet frames.
+///
+/// 1. receive data from ethernet driver
+/// 2. perform checks
+/// 3. if all good, copy to client buffer
+#[no_mangle]
+pub extern "C" fn client_rx(len: *mut i32) -> i32 {
+    // get data from ethernet driver
+    let mut rx_data = match sel4_eth_receive() {
+        Ok(data) => data,
+        Err(e) => {
+            println!("sel4_eth_receive Error: {}", e);
+            unsafe {
+                *len = 0;
+            }
+            return -1;
+        }
+    };
+
+    // perform checks
+    if check_frame_in(rx_data.as_mut()) {
+        // checks OK, return data
+        unsafe {
+            memcpy(client_buf(1), rx_data.as_ptr() as *mut c_void, rx_data.len());
+            *len = rx_data.len() as i32;
+        }
+        0
+    } else {
+        // checks failed, no packet transmitted
+        unsafe {
+            *len = 0;
+        }
+        -1
+    }
+}
+
+/// Event callback I believe
+/// `badge` is not used
+#[no_mangle]
+pub extern "C" fn ethdriver_has_data_callback(_badge: u32) {
+    unsafe {
+        client_emit(1);
+    }
+}
+
+/// Perform checks on an outgoing packet
+/// returns `true` if the packet is OK to be sent
+/// Bonus: call the external firewall function
+fn check_frame_out(_tx_data: &mut Vec<u8>) -> bool {
+    // TODO: Dummy for now
+    true
+}
+
+/// Perform checks on an incoming packet
+/// returns `true` if the packet is OK to be received
+/// Bonus: call the external firewall function
+fn check_frame_in(_rx_data: &mut Vec<u8>) -> bool {
+    // TODO: Dummy for now
+    let _device = Sel4Device::new();
+    true
 }
 
 /// get eth device's MAC address
@@ -74,110 +228,13 @@ pub extern "C" fn client_mac(
         b1, b2, b3, b4, b5, b6
     );
 
+    /*
     let s = singleton();
     let data = s.inner.lock().unwrap();
     println!("It is: {}", *data);
+    */
 
     unsafe {
         ethdriver_mac(b1, b2, b3, b4, b5, b6);
     }
-}
-
-/// transmit `len` bytes from `client_buf` to `ethdriver_buf`
-/// return -1 if some error happened, other values are OK (typically it is 0) [
-///
-/// 1. copy from client buffer into an interim buffer
-/// 2. construct a IP (v4?) packet and perform checks
-/// 3. if all good, copy over to `ethdriver_buf`
-/// Bonus: call the external firewall function
-#[no_mangle]
-pub extern "C" fn client_tx(len: i32) -> i32 {
-    // initial pointer checks
-    unsafe {
-        assert!(!client_buf(1).is_null());
-        assert!(len >= 0);
-    }
-
-    // create a slice of length `len` from `client_buf`
-    let local_buf_ptr = unsafe { std::mem::transmute::<*mut c_void, *mut u8>(client_buf(1)) };
-    let slice = unsafe { slice::from_raw_parts(local_buf_ptr, len as usize) };
-
-    // create a packet
-    let ipv4_packet = Ipv4Packet::new(slice);
-
-    // perform checks
-    if check_packet_out(ipv4_packet) {
-        // passed, copy packet data to ethdriver's transmit buffer
-        unsafe {
-            memcpy(ethdriver_buf, client_buf(1), len as usize);
-            // transmit and return result
-            ethdriver_tx(len)
-        }
-    } else {
-        // checks failed, no packet transmitted
-        -1
-    }
-}
-
-/// copy `len` data from `ethdriver_buf` into `client_buf`
-/// return -1 if some error happened, other values are OK (typically it is 0)
-///
-/// 1. copy data to an interim buffer
-/// 2. perform checks on the constructed Ip packet
-/// 3. if all good, copy to client buffer
-/// Bonus: call the external firewall function
-#[no_mangle]
-pub extern "C" fn client_rx(len: *mut i32) -> i32 {
-    // get `len` data into ethdriver buffer
-    let mut result = unsafe { ethdriver_rx(len) };
-    if result != -1 {
-        // pointer checks
-        unsafe {
-            assert!(!ethdriver_buf.is_null());
-            assert!(!len.is_null());
-        }
-
-        // create a slice of length `len` from `ethdriver_buf`
-        let local_buf_ptr = unsafe { std::mem::transmute::<*mut c_void, *mut u8>(ethdriver_buf) };
-        let slice = unsafe { slice::from_raw_parts(local_buf_ptr, *len as usize) };
-
-        // create a packet
-        let ipv4_packet = Ipv4Packet::new(slice);
-
-        // perform checks
-        if check_packet_in(ipv4_packet) {
-            // passed, copy data to client buffer
-            unsafe {
-                memcpy(client_buf(1), ethdriver_buf, *len as usize);
-            }
-        } else {
-            // checks failed, no packet received
-            unsafe { *len = 0; }
-            result = -1;
-        }
-    }
-    result
-}
-
-/// Event callback I believe
-/// `badge` is not used
-#[no_mangle]
-pub extern "C" fn ethdriver_has_data_callback(_badge: u32) {
-    unsafe {
-        client_emit(1);
-    }
-}
-
-/// Perform checks on an outgoing packet
-/// returns `true` if the packet is OK to be sent
-fn check_packet_out(_ipv4_packet: Ipv4Packet<&[u8]>) -> bool {
-    // TODO: Dummy for now
-    true
-}
-
-/// Perform checks on an incoming packet
-/// returns `true` if the packet is OK to be received
-fn check_packet_in(_ipv4_packet: Ipv4Packet<&[u8]>) -> bool {
-    // TODO: Dummy for now
-    true
 }
