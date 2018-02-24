@@ -7,47 +7,73 @@
 ///
 extern crate libc;
 extern crate smoltcp;
-use libc::{c_void,memcpy};
+use libc::{c_void, memcpy};
 use std::slice;
 use std::io::{Error, ErrorKind};
 
 use smoltcp::phy::Sel4Device;
 
-/*
-static CONFIG_STR: &'static str = include_str!("../config.ini");
 use std::sync::{Arc, Mutex, Once, ONCE_INIT};
 use std::mem;
+use smoltcp::wire::{EthernetAddress, IpAddress, IpCidr};
+use smoltcp::iface::{NeighborCache, EthernetInterfaceBuilder, EthernetInterface};
+use smoltcp::socket::{SocketSet, SocketHandle};
+use smoltcp::wire::{IpVersion, IpProtocol};
+use smoltcp::socket::{RawSocket, RawSocketBuffer, RawPacketBuffer};
+use smoltcp::time::{Duration, Instant};
+use std::collections::BTreeMap;
 
 #[derive(Clone)]
-struct SingletonReader {
-    // Since we will be used in many threads, we need to protect
-    // concurrent access
-    inner: Arc<Mutex<&'static str>>,
+struct Firewall {
+    iface: Arc<Mutex<EthernetInterface<'static, 'static, Sel4Device>>>,
+    sockets: Arc<Mutex<SocketSet<'static, 'static, 'static>>>,
+    handle: Arc<Mutex<SocketHandle>>,
 }
 
-fn singleton() -> SingletonReader {
+fn firewall_init() -> Firewall {
     // Initialize it to a null value
-    static mut SINGLETON: *const SingletonReader = 0 as *const SingletonReader;
+    static mut SINGLETON: *const Firewall = 0 as *const Firewall;
     static ONCE: Once = ONCE_INIT;
 
     unsafe {
         ONCE.call_once(|| {
             // do some parsing of the config here
+            println!("Firewall init");
+
+            let neighbor_cache = NeighborCache::new(BTreeMap::new());
+
+            let ip_addrs = [IpCidr::new(IpAddress::v4(192, 168, 69, 3), 24)];
+            let ethernet_addr = EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x01, 0x01]);
+
+            let device = Sel4Device::new();
+            let iface = EthernetInterfaceBuilder::new(device)
+                .ethernet_addr(ethernet_addr)
+                .neighbor_cache(neighbor_cache)
+                .ip_addrs(ip_addrs)
+                .finalize();
+
+            let rx_buffer = RawSocketBuffer::new(vec![RawPacketBuffer::new(vec![0; 1500])]);
+            let tx_buffer = RawSocketBuffer::new(vec![RawPacketBuffer::new(vec![0; 1500])]);
+            let raw_socket = RawSocket::new(IpVersion::Ipv4, IpProtocol::Udp, rx_buffer, tx_buffer);
+
+            let mut sockets = SocketSet::new(vec![]);
+            let raw_handle = sockets.add(raw_socket);
 
             // Make it
-            let singleton = SingletonReader {
-                inner: Arc::new(Mutex::new(CONFIG_STR)),
+            let fw = Firewall {
+                iface: Arc::new(Mutex::new(iface)),
+                sockets: Arc::new(Mutex::new(sockets)),
+                handle: Arc::new(Mutex::new(raw_handle)),
             };
 
             // Put it in the heap so it can outlive this call
-            SINGLETON = mem::transmute(Box::new(singleton));
+            SINGLETON = mem::transmute(Box::new(fw));
         });
 
         // Now we give out a copy of the data that is safe to use concurrently.
         (*SINGLETON).clone()
     }
 }
-*/
 
 extern "C" {
     // to match C signatures
@@ -59,45 +85,6 @@ extern "C" {
     // For accessing client's buffer
     fn client_buf(cliend_id: u32) -> *mut c_void;
     fn client_emit(badge: u32);
-}
-
-/// A backend for smoltcp, to be called from its `phy` module
-/// Transmits a slice from the client application by copying data
-/// into `ethdriver_buf` and consequently calling `ethdriver_tx()`
-/// Returns either number of transmitted bytes or an error
-fn sel4_eth_transmit(buf: &mut [u8]) -> Result<i32, std::io::Error> {
-    unsafe {
-        let local_buf_ptr = std::mem::transmute::<*mut u8, *mut c_void>(buf.as_mut_ptr());
-        assert!(!ethdriver_buf.is_null());
-        memcpy(ethdriver_buf, local_buf_ptr, buf.len());
-        match ethdriver_tx(buf.len() as i32) {
-            -1 => Err(Error::new(ErrorKind::Other, "ethdriver_tx error")),
-            _ => Ok(buf.len() as i32),
-        }
-    }
-}
-
-/// A backend for smoltcp, to be called from its `phy` module
-/// Attempt to receive data from the ethernet driver
-/// Call `ethdriver_rx` and cast the results.
-/// Returns either a vector of received bytes, or an error
-fn sel4_eth_receive() -> Result<Vec<u8>, std::io::Error> {
-    let mut len = 0;
-    unsafe {
-        if ethdriver_rx(&mut len) == -1 {
-            return Err(Error::new(ErrorKind::Other, "ethdriver_rx error"));
-        }
-
-        assert!(!ethdriver_buf.is_null());
-        // create a slice of length `len` from `ethdriver_buf`
-        let local_buf_ptr = std::mem::transmute::<*mut c_void, *mut u8>(ethdriver_buf);
-        let slice = slice::from_raw_parts(local_buf_ptr, len as usize);
-
-        // instead of dealing with the borrow checker, copy slice in to a vector
-        let mut vec = Vec::new();
-        vec.extend_from_slice(slice);
-        Ok(vec)
-    }
 }
 
 /// To be called from `client_tx`
@@ -134,13 +121,23 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
     // perform checks
     if check_frame_out(tx_data.as_mut()) {
         // all OK, pass data to ethdriver's transmit buffer
-        match sel4_eth_transmit(tx_data.as_mut_slice()) {
-            Ok(_) => 0,
-            Err(e) => {
-                println!("sel4_eth_transmit Error: {}", e);
-                -1
+        let s = firewall_init();
+        let mut iface = s.iface.lock().unwrap();
+        let mut sockets = s.sockets.lock().unwrap();
+        let timestamp = Instant::now();
+        let handle = *s.handle.lock().unwrap();
+
+        iface.poll(&mut sockets, timestamp).expect("poll error");
+        let mut socket = sockets.get::<RawSocket>(handle);
+
+        if socket.can_send() {
+            println!("sending slice: {:?}", tx_data);
+            match socket.send_slice(tx_data.as_slice()) {
+                Ok(_) => println!("data was sent"),
+                Err(e) => println!("data not sent, error: {}", e),
             }
         }
+        0
     } else {
         // checks failed, no packet transmitted
         -1
@@ -158,32 +155,42 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
 #[no_mangle]
 pub extern "C" fn client_rx(len: *mut i32) -> i32 {
     // get data from ethernet driver
-    let mut rx_data = match sel4_eth_receive() {
-        Ok(data) => data,
-        Err(e) => {
-            println!("sel4_eth_receive Error: {}", e);
+    let s = firewall_init();
+    let mut iface = s.iface.lock().unwrap();
+    let mut sockets = s.sockets.lock().unwrap();
+    let timestamp = Instant::now();
+    let handle = *s.handle.lock().unwrap();
+
+    iface.poll(&mut sockets, timestamp).expect("poll error");
+    let mut socket = sockets.get::<RawSocket>(handle);
+
+    if socket.can_recv() {
+        println!("Raw socket can receive");
+        let mut rx_data = Vec::new();
+        rx_data.extend_from_slice(socket.recv().unwrap());
+        println!("just got data: {:?}", rx_data);
+
+        // perform checks
+        if check_frame_in(rx_data.as_mut()) {
+            // checks OK, return data
+            unsafe {
+                memcpy(
+                    client_buf(1),
+                    rx_data.as_ptr() as *mut c_void,
+                    rx_data.len(),
+                );
+                *len = rx_data.len() as i32;
+            }
+            return 0;
+        } else {
+            // checks failed, no packet transmitted
             unsafe {
                 *len = 0;
             }
             return -1;
         }
-    };
-
-    // perform checks
-    if check_frame_in(rx_data.as_mut()) {
-        // checks OK, return data
-        unsafe {
-            memcpy(client_buf(1), rx_data.as_ptr() as *mut c_void, rx_data.len());
-            *len = rx_data.len() as i32;
-        }
-        0
-    } else {
-        // checks failed, no packet transmitted
-        unsafe {
-            *len = 0;
-        }
-        -1
     }
+    0 // default
 }
 
 /// Event callback I believe
@@ -208,7 +215,6 @@ fn check_frame_out(_tx_data: &mut Vec<u8>) -> bool {
 /// Bonus: call the external firewall function
 fn check_frame_in(_rx_data: &mut Vec<u8>) -> bool {
     // TODO: Dummy for now
-    let _device = Sel4Device::new();
     true
 }
 
@@ -228,13 +234,48 @@ pub extern "C" fn client_mac(
         b1, b2, b3, b4, b5, b6
     );
 
-    /*
-    let s = singleton();
-    let data = s.inner.lock().unwrap();
-    println!("It is: {}", *data);
-    */
+    let s = firewall_init();
+    let iface = s.iface.lock().unwrap();
+    println!("eth addr: {}", iface.ethernet_addr());
+    //println!("It is: {}", *data);
 
     unsafe {
         ethdriver_mac(b1, b2, b3, b4, b5, b6);
     }
 }
+
+/*
+static CONFIG_STR: &'static str = include_str!("../config.ini");
+use std::sync::{Arc, Mutex, Once, ONCE_INIT};
+use std::mem;
+
+#[derive(Clone)]
+struct SingletonReader {
+    // Since we will be used in many threads, we need to protect
+    // concurrent access
+    //inner: Arc<Mutex<&'static str>>,
+}
+
+fn singleton() -> SingletonReader {
+    // Initialize it to a null value
+    static mut SINGLETON: *const SingletonReader = 0 as *const SingletonReader;
+    static ONCE: Once = ONCE_INIT;
+
+    unsafe {
+        ONCE.call_once(|| {
+            // do some parsing of the config here
+
+            // Make it
+            let singleton = SingletonReader {
+                inner: Arc::new(Mutex::new(CONFIG_STR)),
+            };
+
+            // Put it in the heap so it can outlive this call
+            SINGLETON = mem::transmute(Box::new(singleton));
+        });
+
+        // Now we give out a copy of the data that is safe to use concurrently.
+        (*SINGLETON).clone()
+    }
+}
+*/

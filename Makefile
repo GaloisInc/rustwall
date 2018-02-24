@@ -1,4 +1,4 @@
-main: libsample.a
+main: clean libsample.a
 	gcc src/main.c libsample.a -lpthread -ldl -o main
 
 libsample.a: src/lib.rs
