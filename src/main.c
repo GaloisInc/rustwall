@@ -199,6 +199,14 @@ int ethdriver_rx(int* len)
 void ethdriver_mac(uint8_t *b1, uint8_t *b2, uint8_t *b3, uint8_t *b4,
     uint8_t *b5, uint8_t *b6)
 {
+  static uint8_t mac[] = {0x02, 0x00, 0x00, 0x00, 0x01, 0x01};
+  *b1 = mac[0];
+  *b2 = mac[1];
+  *b3 = mac[2];
+  *b4 = mac[3];
+  *b5 = mac[4];
+  *b6 = mac[5];
+  /*
   printf("Hello from ethdriver_mac: ");
   printf("b1=%u, ", *b1);
   printf("b2=%u, ", *b2);
@@ -206,6 +214,7 @@ void ethdriver_mac(uint8_t *b1, uint8_t *b2, uint8_t *b3, uint8_t *b4,
   printf("b4=%u, ", *b4);
   printf("b5=%u, ", *b5);
   printf("b6=%u\n", *b6);
+  */
 }
 
 
@@ -224,7 +233,6 @@ int main()
   }
 
   printf("hello from C\n");
-
   memset(&to_client_1_data, 0, sizeof(to_client_1_data));
   memset(&from_ethdriver_data, 0, sizeof(from_ethdriver_data));
 
@@ -234,6 +242,7 @@ int main()
   uint8_t b4 = 44;
   uint8_t b5 = 55;
   uint8_t b6 = 66;
+
 /*
   client_mac(&b1, &b2, &b3, &b4, &b5, &b6);
 
@@ -267,6 +276,18 @@ int main()
   // client receive
   printf("Client receive call\n");
   int returnval = client_rx(&len);
+  printf("client_rx received %u bytes with return value %i\n", len, returnval);
+
+  printf("Client receive call\n");
+  returnval = client_rx(&len);
+  printf("client_rx received %u bytes with return value %i\n", len, returnval);
+
+  printf("Client receive call\n");
+  returnval = client_rx(&len);
+  printf("client_rx received %u bytes with return value %i\n", len, returnval);
+
+  printf("Client receive call\n");
+  returnval = client_rx(&len);
   printf("client_rx received %u bytes with return value %i\n", len, returnval);
 /*
   printf("C client_buf[0] = %u\n", to_client_1_data.content[0]);
