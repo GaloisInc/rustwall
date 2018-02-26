@@ -9,25 +9,46 @@ extern crate libc;
 extern crate smoltcp;
 use libc::{c_void, memcpy};
 use std::slice;
-use std::io::{Error, ErrorKind};
-
-use smoltcp::phy::Sel4Device;
 
 use std::sync::{Arc, Mutex, Once, ONCE_INIT};
 use std::mem;
-use smoltcp::wire::{EthernetAddress, IpAddress, IpCidr};
+use std::collections::BTreeMap;
+
+use smoltcp::phy::Sel4Device;
+use smoltcp::wire::{EthernetAddress, EthernetProtocol, EthernetFrame};
+use smoltcp::wire::{IpProtocol, IpAddress, IpCidr, IpEndpoint, Ipv4Repr, Ipv4Packet};
+use smoltcp::wire::{UdpRepr, UdpPacket};
 use smoltcp::iface::{NeighborCache, EthernetInterfaceBuilder, EthernetInterface};
 use smoltcp::socket::{SocketSet, SocketHandle};
-use smoltcp::wire::{IpVersion, IpProtocol};
-use smoltcp::socket::{RawSocket, RawSocketBuffer, RawPacketBuffer};
-use smoltcp::time::{Duration, Instant};
-use std::collections::BTreeMap;
+use smoltcp::socket::{UdpSocket, UdpSocketBuffer, UdpPacketBuffer};
+use smoltcp::time::Instant;
+use smoltcp::phy::ChecksumCapabilities;
+
+static PORT: u16 = 6969;
+static HOP_LIMIT: u8 = 64;
+static ETHERNET_FRAME_LEN: usize = 14; // 6 bytes src MAC, 6 bytes dest MAC, 2 bytes Protocol
+                                       //static IFACE_ADDR: IpAddress = IpAddress::v4(192, 168, 69, 3); (lazy_static!)
 
 #[derive(Clone)]
 struct Firewall {
     iface: Arc<Mutex<EthernetInterface<'static, 'static, Sel4Device>>>,
     sockets: Arc<Mutex<SocketSet<'static, 'static, 'static>>>,
     handle: Arc<Mutex<SocketHandle>>,
+}
+
+fn get_device_mac() -> EthernetAddress {
+    let mut b1: u8 = 0;
+    let mut b2: u8 = 0;
+    let mut b3: u8 = 0;
+    let mut b4: u8 = 0;
+    let mut b5: u8 = 0;
+    let mut b6: u8 = 0;
+
+    unsafe {
+        ethdriver_mac(&mut b1, &mut b2, &mut b3, &mut b4, &mut b5, &mut b6);
+    }
+
+    EthernetAddress([b1, b2, b3, b4, b5, b6])
 }
 
 fn firewall_init() -> Firewall {
@@ -43,7 +64,10 @@ fn firewall_init() -> Firewall {
             let neighbor_cache = NeighborCache::new(BTreeMap::new());
 
             let ip_addrs = [IpCidr::new(IpAddress::v4(192, 168, 69, 3), 24)];
-            let ethernet_addr = EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x01, 0x01]);
+            let ethernet_addr = get_device_mac();
+
+            println!("IP: {}", ip_addrs[0]);
+            println!("MAC: {}", ethernet_addr);
 
             let device = Sel4Device::new();
             let iface = EthernetInterfaceBuilder::new(device)
@@ -52,18 +76,29 @@ fn firewall_init() -> Firewall {
                 .ip_addrs(ip_addrs)
                 .finalize();
 
-            let rx_buffer = RawSocketBuffer::new(vec![RawPacketBuffer::new(vec![0; 1500])]);
-            let tx_buffer = RawSocketBuffer::new(vec![RawPacketBuffer::new(vec![0; 1500])]);
-            let raw_socket = RawSocket::new(IpVersion::Ipv4, IpProtocol::Udp, rx_buffer, tx_buffer);
+            let udp_rx_buffer = UdpSocketBuffer::new(vec![UdpPacketBuffer::new(vec![0; 1500])]);
+            let udp_tx_buffer = UdpSocketBuffer::new(vec![UdpPacketBuffer::new(vec![0; 1500])]);
+            let udp_socket = UdpSocket::new(udp_rx_buffer, udp_tx_buffer);
 
             let mut sockets = SocketSet::new(vec![]);
-            let raw_handle = sockets.add(raw_socket);
+            let udp_handle = sockets.add(udp_socket);
+
+            {
+                // Bind UDP sockets to their respective ports
+                let mut socket = sockets.get::<UdpSocket>(udp_handle);
+
+                if !socket.is_open() {
+                    socket
+                        .bind(IpEndpoint::new(IpAddress::v4(192, 168, 69, 3), PORT))
+                        .unwrap()
+                }
+            }
 
             // Make it
             let fw = Firewall {
                 iface: Arc::new(Mutex::new(iface)),
                 sockets: Arc::new(Mutex::new(sockets)),
-                handle: Arc::new(Mutex::new(raw_handle)),
+                handle: Arc::new(Mutex::new(udp_handle)),
             };
 
             // Put it in the heap so it can outlive this call
@@ -77,10 +112,7 @@ fn firewall_init() -> Firewall {
 
 extern "C" {
     // to match C signatures
-    static ethdriver_buf: *mut c_void;
     fn ethdriver_mac(b1: *mut u8, b2: *mut u8, b3: *mut u8, b4: *mut u8, b5: *mut u8, b6: *mut u8);
-    fn ethdriver_tx(len: i32) -> i32;
-    fn ethdriver_rx(len: *mut i32) -> i32;
 
     // For accessing client's buffer
     fn client_buf(cliend_id: u32) -> *mut c_void;
@@ -100,6 +132,7 @@ fn sel4_client_transmute(len: usize) -> Vec<u8> {
         // instead of dealing with the borrow checker, copy the slice in to a vector
         let mut vec = Vec::new();
         vec.extend_from_slice(slice);
+        println!("Sending vec/len() = {}, vec = {:?}", vec.len(), vec);
         vec
     }
 }
@@ -116,10 +149,54 @@ fn sel4_client_transmute(len: usize) -> Vec<u8> {
 pub extern "C" fn client_tx(len: i32) -> i32 {
     assert!(len >= 0);
     // get data to transmit as a vector
-    let mut tx_data = sel4_client_transmute(len as usize);
+    let frame = sel4_client_transmute(len as usize);
+    let eth_frame = EthernetFrame::new_checked(frame).unwrap();
+
+    // drop any non-ipv4 packets
+    // no other ethernet checks are necessary
+    if let EthernetProtocol::Ipv4 = eth_frame.ethertype() {
+        println!("network protocol OK");
+    } else {
+        return -1;
+    }
+
+    // create a Ipv4 packet
+    println!("EthFrame = {:?}", &eth_frame);
+    let data = &eth_frame.into_inner()[14..];
+    let ipv4_packet = Ipv4Packet::new_checked(&data).unwrap();
+
+    /*
+	let ipv4_repr = Ipv4Repr::parse(&ipv4_packet, &ChecksumCapabilities::default()).unwrap();
+    if !ipv4_repr.src_addr.is_unicast() {
+        // Discard packets with non-unicast source addresses.
+        return -1;
+    }
+    */
+
+    let ip_payload = ipv4_packet.payload();
+
+    // drop any non-UDP packets
+    if let IpProtocol::Udp = ipv4_packet.protocol() {
+        println!("IP protocol OK");
+    } else {
+        return -1;
+    }
+
+    // create UDP packet
+    let udp_packet = UdpPacket::new_checked(ip_payload).unwrap();
+
+    // get endpoints
+    let dst_endpoint = IpEndpoint::new(
+        IpAddress::Ipv4(ipv4_packet.dst_addr()),
+        udp_packet.dst_port(),
+    );
+    let src_endpoint = IpEndpoint::new(
+        IpAddress::Ipv4(ipv4_packet.src_addr()),
+        udp_packet.src_port(),
+    );
 
     // perform checks
-    if check_frame_out(tx_data.as_mut()) {
+    if check_frame_out(&udp_packet.payload(), src_endpoint, dst_endpoint) {
         // all OK, pass data to ethdriver's transmit buffer
         let s = firewall_init();
         let mut iface = s.iface.lock().unwrap();
@@ -127,16 +204,18 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
         let timestamp = Instant::now();
         let handle = *s.handle.lock().unwrap();
 
-        iface.poll(&mut sockets, timestamp).expect("poll error");
-        let mut socket = sockets.get::<RawSocket>(handle);
+        {
+            let mut socket = sockets.get::<UdpSocket>(handle);
 
-        if socket.can_send() {
-            println!("sending slice: {:?}", tx_data);
-            match socket.send_slice(tx_data.as_slice()) {
-                Ok(_) => println!("data was sent"),
-                Err(e) => println!("data not sent, error: {}", e),
+            println!("Sending data");
+            if socket.can_send() {
+                match socket.send_slice(udp_packet.payload(), dst_endpoint) {
+                    Ok(_) => println!("data was sent"),
+                    Err(e) => println!("data not sent, error: {}", e),
+                }
             }
         }
+        iface.poll(&mut sockets, timestamp).expect("poll error");
         0
     } else {
         // checks failed, no packet transmitted
@@ -161,26 +240,84 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
     let timestamp = Instant::now();
     let handle = *s.handle.lock().unwrap();
 
+    println!("Rust client_rx: polling iface");
     iface.poll(&mut sockets, timestamp).expect("poll error");
-    let mut socket = sockets.get::<RawSocket>(handle);
+
+    let mut socket = sockets.get::<UdpSocket>(handle); // just one handle for now (with a given port)
 
     if socket.can_recv() {
-        println!("Raw socket can receive");
-        let mut rx_data = Vec::new();
-        rx_data.extend_from_slice(socket.recv().unwrap());
-        println!("just got data: {:?}", rx_data);
+        let (data, src_endpoint) = socket.recv().unwrap(); // data: payload, endpoint: sender (IP+port)
+        println!("Rust got data from {}: {:?}", src_endpoint, data);
+
+        // make dst endpoint
+        let dst_endpoint = IpEndpoint::new(iface.ip_addrs()[0].address(), 6969);
 
         // perform checks
-        if check_frame_in(rx_data.as_mut()) {
-            // checks OK, return data
+        if check_frame_in(data, src_endpoint, dst_endpoint) {
+            // checks OK, build the frame again
+
+            // First generate UDP packet
+            let udp_repr = UdpRepr {
+                src_port: src_endpoint.port, // original source port
+                dst_port: 6969,              // hardcoded for now
+                payload: data,               // original payload
+            }; // can get raw UDP bytes
+            let mut udp_bytes = vec![0xa5; udp_repr.buffer_len()]; // UDP packet
+            let udp_packet_len = udp_bytes.len();
+            let mut udp_packet = UdpPacket::new(&mut udp_bytes);
+            udp_repr.emit(
+                &mut udp_packet,
+                &src_endpoint.addr,
+                &iface.ip_addrs()[0].address(),
+                &ChecksumCapabilities::default(),
+            );
+            println!("UDP packet: {:?}", udp_packet);
+
+            // Then wrap it in an IP packet
+            let src_addr = match src_endpoint.addr {
+                IpAddress::Ipv4(adr) => adr,
+                _ => panic!("unsupported address"),
+            };
+
+            let dst_addr = match iface.ip_addrs()[0].address() {
+                IpAddress::Ipv4(adr) => adr,
+                _ => panic!("unsupported address"),
+            };
+
+            let ip_repr = Ipv4Repr {
+                src_addr: src_addr,        // original src addr
+                dst_addr: dst_addr,        // iface (dest) addr
+                protocol: IpProtocol::Udp, // udp only
+                payload_len: udp_repr.buffer_len(),
+                hop_limit: HOP_LIMIT,
+            }; // to get raw IP packet
+            let mut ip_bytes = vec![0xa5; ip_repr.buffer_len() + udp_packet_len];
+            let mut ip_packet = Ipv4Packet::new(ip_bytes.as_mut_slice());
+            ip_repr.emit(&mut ip_packet, &ChecksumCapabilities::default());
+            ip_packet
+                .payload_mut()
+                .copy_from_slice(&udp_packet.into_inner());
+
+            println!("IP packet: {:?}", ip_packet);
+
+            // Finally wrap it with an Ethernet frame
+            let mut eth_bytes = vec![0xa5; ETHERNET_FRAME_LEN + ip_packet.total_len() as usize];
+            let mut frame = EthernetFrame::new(&mut eth_bytes);
+            frame.set_dst_addr(iface.ethernet_addr());
+            frame.set_src_addr(EthernetAddress([0x06, 0xb4, 0x88, 0x85, 0xaa, 0xb4])); // Just a dummy for now (TODO)
+            frame.set_ethertype(EthernetProtocol::Ipv4);
+            frame.payload_mut().copy_from_slice(&ip_packet.into_inner());
+
+            println!("Ethernet frame: {:?}", frame);
+            let frame = frame.into_inner();
+            println!("Ethernet frame len = {}", frame.len());
+
+            // finally copy data to the caller's buffer
             unsafe {
-                memcpy(
-                    client_buf(1),
-                    rx_data.as_ptr() as *mut c_void,
-                    rx_data.len(),
-                );
-                *len = rx_data.len() as i32;
+                memcpy(client_buf(1), frame.as_ptr() as *mut c_void, frame.len());
+                *len = frame.len() as i32;
             }
+
             return 0;
         } else {
             // checks failed, no packet transmitted
@@ -205,7 +342,16 @@ pub extern "C" fn ethdriver_has_data_callback(_badge: u32) {
 /// Perform checks on an outgoing packet
 /// returns `true` if the packet is OK to be sent
 /// Bonus: call the external firewall function
-fn check_frame_out(_tx_data: &mut Vec<u8>) -> bool {
+///
+/// Input: UDP packet payload
+///		   destination's endpoint (Ip addr + port)
+/// Sender is obvious.
+///
+/// We are checking for:
+/// 1. destination IP is allowed
+/// 2. destination port is allowed
+/// 3. source port is allowed (one from the bound sockets) // TODO: check if a separate port for sending is needed
+fn check_frame_out(_tx_data: &[u8], _src: IpEndpoint, _dst: IpEndpoint) -> bool {
     // TODO: Dummy for now
     true
 }
@@ -213,7 +359,17 @@ fn check_frame_out(_tx_data: &mut Vec<u8>) -> bool {
 /// Perform checks on an incoming packet
 /// returns `true` if the packet is OK to be received
 /// Bonus: call the external firewall function
-fn check_frame_in(_rx_data: &mut Vec<u8>) -> bool {
+///
+/// Input: UDP packet payload
+///		   sender's IpEndpoint (Ip addr + port)
+/// Destination is obvious. Port is statically set,
+/// and can be retrieved from a socket handle. So no UDP packet
+/// is received unless a socket is explicitly bound to a port
+///
+/// We are checking for:
+/// 1. sender IP is allowed
+/// 2. Maybe sender port?
+fn check_frame_in(_rx_data: &[u8], _src: IpEndpoint, _dst: IpEndpoint) -> bool {
     // TODO: Dummy for now
     true
 }
@@ -229,16 +385,6 @@ pub extern "C" fn client_mac(
     b5: &mut u8,
     b6: &mut u8,
 ) {
-    println!(
-        "client_mac: b1={:?}, b2={:?}, b3={:?}, b4={:?}, b5={:?}, b6={:?}",
-        b1, b2, b3, b4, b5, b6
-    );
-
-    let s = firewall_init();
-    let iface = s.iface.lock().unwrap();
-    println!("eth addr: {}", iface.ethernet_addr());
-    //println!("It is: {}", *data);
-
     unsafe {
         ethdriver_mac(b1, b2, b3, b4, b5, b6);
     }
