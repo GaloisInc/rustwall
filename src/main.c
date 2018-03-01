@@ -106,14 +106,16 @@ struct
   char content[4096];
 } from_ethdriver_data;
 
-volatile void * ethdriver_buf = (volatile void *) &from_ethdriver_data;
+//volatile void * ethdriver_buf = (volatile void *) &from_ethdriver_data;
+void * ethdriver_buf = (void *) &from_ethdriver_data;
 
 struct
 {
   char content[4096];
 } to_client_1_data;
 
-volatile void * client_buf_1 = (volatile void *) &to_client_1_data;
+//volatile void * client_buf_1 = (volatile void *) &to_client_1_data;
+void * client_buf_1 = (void *) &to_client_1_data;
 
 void *client_buf(seL4_Word client_id)
 {
@@ -312,10 +314,11 @@ int main()
    // data callback
    ethdriver_has_data_callback(66);
    */
-
+  char* buf = (char*)client_buf(1);
    // client transmit
    for (int i = 0; i <= sizeof(packet_bytes); i++) {
-     to_client_1_data.content[i] = packet_bytes[i];
+     //to_client_1_data.content[i] = packet_bytes[i];
+     buf[i] = packet_bytes[i];
      len = i;
    }
 

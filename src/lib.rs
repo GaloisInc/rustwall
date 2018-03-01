@@ -51,6 +51,7 @@ fn get_device_mac() -> EthernetAddress {
     EthernetAddress([b1, b2, b3, b4, b5, b6])
 }
 
+
 fn firewall_init() -> Firewall {
     // Initialize it to a null value
     static mut SINGLETON: *const Firewall = 0 as *const Firewall;
@@ -151,6 +152,7 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
     // get data to transmit as a vector
     let frame = sel4_client_transmute(len as usize);
     let eth_frame = EthernetFrame::new_checked(frame).unwrap();
+	println!("Client_tx: eth_frame {}", eth_frame);
 
     // drop any non-ipv4 packets
     // no other ethernet checks are necessary
@@ -221,6 +223,7 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
         // checks failed, no packet transmitted
         -1
     }
+    
 }
 
 /// To be called from camkes VM app.
@@ -425,3 +428,24 @@ fn singleton() -> SingletonReader {
     }
 }
 */
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[allow(dead_code)]
+    fn print_array(name: &str, b: &[u8]) {
+        print!("{}[{}]=[", name, b.len());
+        for i in b {
+            print!("0x{:x},", i);
+        }
+        println!("];");
+    }
+
+
+    #[test]
+    fn basic() {
+    	println!("hello testing here");
+    }
+}
