@@ -41,6 +41,11 @@ git clone https://github.com/podhrmic/smoltcp.git
 cd smoltcp
 git checkout sel4
 
+# dont forget to make symlinks to the static libraries
+$ ln -s ../rustwall/libfirewall.a libfirewall.a
+$ ln -s ../rustwall/libserver.a libserver.a
+
+
 # run the example
 cargo run --example server_sel4 --features phy-client
 ```
