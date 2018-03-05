@@ -243,7 +243,7 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
     let timestamp = Instant::now();
     let handle = *s.handle.lock().unwrap();
 
-    println!("Rust client_rx: polling iface");
+    //println!("Rust client_rx: polling iface");
     iface.poll(&mut sockets, timestamp).expect("poll error");
 
     let mut socket = sockets.get::<UdpSocket>(handle); // just one handle for now (with a given port)

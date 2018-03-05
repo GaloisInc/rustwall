@@ -105,15 +105,15 @@ void client_emit(unsigned int badge)
 int ethdriver_tx(int len)
 {
   ethdriver_init();
-  printf("C Attempt to write %i bytes\n", len);
+  //printf("C Attempt to write %i bytes\n", len);
   memcpy(tun_buffer, ethdriver_buf, len);
   len = write(tun_fd, tun_buffer, len);
   if (len < 0) {
-    perror("C Writing to interface");
+    //perror("C Writing to interface");
     close(tun_fd);
     exit(1);
   } else {
-    printf("C Wrote %i bytes\n", len);
+    //printf("C Wrote %i bytes\n", len);
   }
   return 0;
 }
@@ -149,15 +149,15 @@ int ethdriver_rx(int* len)
   }
 */
 
-   printf("C Attemp to read\n");
+   //printf("C Attemp to read\n");
    *len = read(tun_fd,tun_buffer,sizeof(tun_buffer));
    if(*len < 0) {
-   perror("C Reading from interface");
+   //perror("C Reading from interface");
    //close(tun_fd);
    //exit(1);
    return -1;
    } else {
-   printf("C read %i bytes\n",*len);
+   //printf("C read %i bytes\n",*len);
    memcpy(ethdriver_buf, tun_buffer, *len);
    }
    return 0;
@@ -171,7 +171,7 @@ int ethdriver_rx(int* len)
 void ethdriver_mac(uint8_t *b1, uint8_t *b2, uint8_t *b3, uint8_t *b4,
     uint8_t *b5, uint8_t *b6)
 {
-  static uint8_t mac[] = { 0x02, 0x00, 0x00, 0x00, 0x01, 0x01 };
+  static uint8_t mac[] = { 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 };
   *b1 = mac[0];
   *b2 = mac[1];
   *b3 = mac[2];
