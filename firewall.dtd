@@ -1,0 +1,12 @@
+<!-- Firewall configuration DTD -->
+
+<!ELEMENT firewall (open_ports)>
+<!ELEMENT open_ports (port+)>
+<!ELEMENT port EMPTY>
+
+<!ATTLIST port
+number CDATA #REQUIRED>
+
+<!ATTLIST firewall
+ip_addr CDATA #REQUIRED>
+

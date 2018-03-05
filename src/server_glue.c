@@ -188,7 +188,6 @@ bool ethdriver_init(void)
   static bool status = false;
 
   if (!status) {
-    printf("ethdriver_init\n");
     /* Connect to the device */
     strcpy(tun_name, "tap0");
     tun_fd = tun_alloc(tun_name, IFF_TAP | IFF_NO_PI | O_NONBLOCK); /* tun interface */
@@ -205,7 +204,7 @@ bool ethdriver_init(void)
     //FD_ZERO(&set); // clear the set
     //FD_SET(tun_fd, &set); // add our file descriptor to the set
 
-    printf("Init done\n");
+    printf(">>ethdriver init done\n");
 
     status = true;
   }

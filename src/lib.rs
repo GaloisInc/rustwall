@@ -1,5 +1,5 @@
 #![feature(libc)]
-//#![deny(unused)]
+#![deny(unused)]
 ///
 /// Rust version of Firewall camkes component
 /// see `firewall.c` for the original C version
@@ -7,8 +7,15 @@
 ///
 extern crate libc;
 extern crate smoltcp;
+extern crate xml;
+
+use xml::reader::{EventReader, XmlEvent};
+use xml::attribute::OwnedAttribute;
+
 use libc::{c_void, memcpy};
+use std::str::FromStr;
 use std::slice;
+use std::fmt;
 
 use std::sync::{Arc, Mutex, Once, ONCE_INIT};
 use std::mem;
@@ -16,7 +23,7 @@ use std::collections::BTreeMap;
 
 use smoltcp::phy::Sel4Device;
 use smoltcp::wire::{EthernetAddress, EthernetProtocol, EthernetFrame};
-use smoltcp::wire::{IpProtocol, IpAddress, IpCidr, IpEndpoint, Ipv4Repr, Ipv4Packet};
+use smoltcp::wire::{IpProtocol, IpAddress, IpCidr, IpEndpoint, Ipv4Repr, Ipv4Packet, Ipv4Address};
 use smoltcp::wire::{UdpRepr, UdpPacket};
 use smoltcp::iface::{NeighborCache, EthernetInterfaceBuilder, EthernetInterface};
 use smoltcp::socket::{SocketSet, SocketHandle};
@@ -24,51 +31,172 @@ use smoltcp::socket::{UdpSocket, UdpSocketBuffer, UdpPacketBuffer};
 use smoltcp::time::Instant;
 use smoltcp::phy::ChecksumCapabilities;
 
-static PORT: u16 = 6969;
 static HOP_LIMIT: u8 = 64;
 static ETHERNET_FRAME_LEN: usize = 14; // 6 bytes src MAC, 6 bytes dest MAC, 2 bytes Protocol
-                                       //static IFACE_ADDR: IpAddress = IpAddress::v4(192, 168, 69, 3); (lazy_static!)
 
+static CONFIG_STR: &'static str = include_str!("../config.xml"); // main configuration file
+
+/// Main struct encompasing firewall network interface,
+/// socket set with associated handles and configuration struct
+///
+/// <b>TODO:</b> convert into a single Arc<Mutex<T>> struct for easier handling.
 #[derive(Clone)]
 struct Firewall {
     iface: Arc<Mutex<EthernetInterface<'static, 'static, Sel4Device>>>,
     sockets: Arc<Mutex<SocketSet<'static, 'static, 'static>>>,
-    handle: Arc<Mutex<SocketHandle>>,
+    handles: Arc<Mutex<Vec<SocketHandle>>>,
+    config: Arc<Mutex<FirewallConfig>>,
 }
 
-fn get_device_mac() -> EthernetAddress {
-    let mut b1: u8 = 0;
-    let mut b2: u8 = 0;
-    let mut b3: u8 = 0;
-    let mut b4: u8 = 0;
-    let mut b5: u8 = 0;
-    let mut b6: u8 = 0;
+/// Basic firewall configuration struct
+/// Initialized from `CONFIG_STR` xml configuration, it currently provides:
+/// - IP address of the network interface (and its netmask)
+/// - open ports
+#[derive(Debug)]
+struct FirewallConfig {
+    ports: Vec<u16>,
+    local_ip: Ipv4Address,
+    netmask: u8,
+}
 
-    unsafe {
-        ethdriver_mac(&mut b1, &mut b2, &mut b3, &mut b4, &mut b5, &mut b6);
+impl fmt::Display for FirewallConfig {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut s = format!("IP addr: {}, netmask: {}\n", self.local_ip, self.netmask);
+        s += "Ports:\n";
+        for port in &self.ports {
+            s += &format!("- {},\n", port);
+        }
+        write!(f, "{}", s)
+    }
+}
+
+/// Auxilliary enum to make xml parsing cleaner
+#[derive(Debug)]
+enum ConfigTags {
+    Firewall,
+    OpenPorts,
+    Port,
+}
+
+impl FromStr for ConfigTags {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<ConfigTags, ()> {
+        match s {
+            "firewall" => Ok(ConfigTags::Firewall),
+            "open_ports" => Ok(ConfigTags::OpenPorts),
+            "port" => Ok(ConfigTags::Port),
+            _ => Err(()),
+        }
+    }
+}
+
+/// Check presence of an attribute in an xml tag
+fn has_attribute(attributes: &Vec<OwnedAttribute>, value: &str) -> (bool, usize) {
+    let mut idx = 0;
+    for attr in attributes {
+        if attr.name.local_name == value {
+            return (true, idx);
+        }
+        idx += 1;
+    }
+    return (false, idx);
+}
+
+/// Parse configuration string (an xml file) and return
+/// a `FirewallConfig` struct.
+///
+/// <b>TODO:</b> better error handling to avoid panic?
+/// <b>TODO:</b>
+fn parse_config_string(config: &str) -> FirewallConfig {
+    let mut ports = Vec::new();
+    let mut ip_addr = Ipv4Address::default();
+    let mut netmask = 0;
+
+    let parser = EventReader::from_str(config);
+    for e in parser {
+        match e {
+            Ok(XmlEvent::StartElement {
+                name, attributes, ..
+            }) => {
+                match ConfigTags::from_str(name.local_name.as_ref()).unwrap() {
+                    ConfigTags::Port => {
+                        let (name_ok, idx) = has_attribute(&attributes, "number");
+                        if name_ok {
+                            ports.push(attributes[idx].value.parse::<u16>().unwrap());
+                        } else {
+                            panic!(
+                                "No attribute 'number' present. Attributes: {:?}",
+                                attributes
+                            );
+                        }
+                    }
+                    ConfigTags::Firewall => {
+                        let (addr_ok, idx) = has_attribute(&attributes, "ip_addr");
+                        if addr_ok {
+                            let octets: Vec<u8> = attributes[idx]
+                                .value
+                                .split('.')
+                                .map(|x| x.parse::<u8>().unwrap())
+                                .collect();
+                            ip_addr = Ipv4Address::from_bytes(&octets);
+                        } else {
+                            panic!(
+                                "No attribute 'ip_addr' present. Attributes: {:?}",
+                                attributes
+                            );
+                        }
+                        let (mask_ok, idx) = has_attribute(&attributes, "netmask");
+                        if mask_ok {
+                            netmask = attributes[idx].value.parse::<u8>().unwrap();
+                        } else {
+                            panic!(
+                                "No attribute 'netmask' present. Attributes: {:?}",
+                                attributes
+                            );
+                        }
+                    }
+                    ConfigTags::OpenPorts => {
+                        // TODO: check gthe existence of this tag before reading the ports?
+                        // do nothing
+                    }
+                }
+            }
+            Ok(XmlEvent::EndElement { .. }) => {
+                // do nothing for now
+            }
+            Err(e) => {
+                println!("Error: {}", e);
+                break;
+            }
+            _ => {}
+        }
     }
 
-    EthernetAddress([b1, b2, b3, b4, b5, b6])
+    FirewallConfig {
+        ports: ports,
+        local_ip: ip_addr,
+        netmask: netmask,
+    }
 }
 
-
+/// Initialize singleton
 fn firewall_init() -> Firewall {
-    // Initialize it to a null value
     static mut SINGLETON: *const Firewall = 0 as *const Firewall;
     static ONCE: Once = ONCE_INIT;
 
     unsafe {
         ONCE.call_once(|| {
-            // do some parsing of the config here
             println!("Firewall init");
+            let conf = parse_config_string(CONFIG_STR);
+            println!("Firewall Config: {}", conf);
 
             let neighbor_cache = NeighborCache::new(BTreeMap::new());
 
-            let ip_addrs = [IpCidr::new(IpAddress::v4(192, 168, 69, 3), 24)];
+            let ip_addrs = [IpCidr::new(IpAddress::Ipv4(conf.local_ip), conf.netmask)];
             let ethernet_addr = get_device_mac();
 
-            println!("IP: {}", ip_addrs[0]);
-            println!("MAC: {}", ethernet_addr);
+            println!("Firewall MAC: {}", ethernet_addr);
 
             let device = Sel4Device::new();
             let iface = EthernetInterfaceBuilder::new(device)
@@ -77,29 +205,37 @@ fn firewall_init() -> Firewall {
                 .ip_addrs(ip_addrs)
                 .finalize();
 
-            let udp_rx_buffer = UdpSocketBuffer::new(vec![UdpPacketBuffer::new(vec![0; 1500])]);
-            let udp_tx_buffer = UdpSocketBuffer::new(vec![UdpPacketBuffer::new(vec![0; 1500])]);
-            let udp_socket = UdpSocket::new(udp_rx_buffer, udp_tx_buffer);
-
             let mut sockets = SocketSet::new(vec![]);
-            let udp_handle = sockets.add(udp_socket);
+            let mut handles = Vec::new();
+
+            // initialize buffers
+            for _ in 0..conf.ports.len() {
+                let udp_rx_buffer = UdpSocketBuffer::new(vec![UdpPacketBuffer::new(vec![0; 1500])]);
+                let udp_tx_buffer = UdpSocketBuffer::new(vec![UdpPacketBuffer::new(vec![0; 1500])]);
+                let udp_socket = UdpSocket::new(udp_rx_buffer, udp_tx_buffer);
+
+                handles.push(sockets.add(udp_socket));
+            }
 
             {
-                // Bind UDP sockets to their respective ports
-                let mut socket = sockets.get::<UdpSocket>(udp_handle);
-
-                if !socket.is_open() {
-                    socket
-                        .bind(IpEndpoint::new(IpAddress::v4(192, 168, 69, 3), PORT))
-                        .unwrap()
+                // bind sockets to proper ports
+                for (handle, port) in handles.iter().zip(&conf.ports) {
+                    // Bind UDP sockets to their respective ports
+                    let mut socket = sockets.get::<UdpSocket>(*handle);
+                    if !socket.is_open() {
+                        socket
+                            .bind(IpEndpoint::new(IpAddress::Ipv4(conf.local_ip), *port))
+                            .unwrap()
+                    }
                 }
             }
 
-            // Make it
+            // Create firewall struct
             let fw = Firewall {
                 iface: Arc::new(Mutex::new(iface)),
                 sockets: Arc::new(Mutex::new(sockets)),
-                handle: Arc::new(Mutex::new(udp_handle)),
+                handles: Arc::new(Mutex::new(handles)),
+                config: Arc::new(Mutex::new(conf)),
             };
 
             // Put it in the heap so it can outlive this call
@@ -120,6 +256,22 @@ extern "C" {
     fn client_emit(badge: u32);
 }
 
+/// Pass the device MAC address to the callee
+fn get_device_mac() -> EthernetAddress {
+    let mut b1: u8 = 0;
+    let mut b2: u8 = 0;
+    let mut b3: u8 = 0;
+    let mut b4: u8 = 0;
+    let mut b5: u8 = 0;
+    let mut b6: u8 = 0;
+
+    unsafe {
+        ethdriver_mac(&mut b1, &mut b2, &mut b3, &mut b4, &mut b5, &mut b6);
+    }
+
+    EthernetAddress([b1, b2, b3, b4, b5, b6])
+}
+
 /// To be called from `client_tx`
 /// Coverts client data into `Vec<u8>` and returns it.
 /// The vector can be empty.
@@ -133,7 +285,6 @@ fn sel4_client_transmute(len: usize) -> Vec<u8> {
         // instead of dealing with the borrow checker, copy the slice in to a vector
         let mut vec = Vec::new();
         vec.extend_from_slice(slice);
-        println!("Sending vec/len() = {}, vec = {:?}", vec.len(), vec);
         vec
     }
 }
@@ -152,7 +303,7 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
     // get data to transmit as a vector
     let frame = sel4_client_transmute(len as usize);
     let eth_frame = EthernetFrame::new_checked(frame).unwrap();
-	println!("Client_tx: eth_frame {}", eth_frame);
+    println!("Client_tx: eth_frame {}", eth_frame);
 
     // drop any non-ipv4 packets
     // no other ethernet checks are necessary
@@ -163,25 +314,20 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
     }
 
     // create a Ipv4 packet
-    println!("EthFrame = {:?}", &eth_frame);
-    let data = &eth_frame.into_inner()[14..];
+    let data = &eth_frame.into_inner()[ETHERNET_FRAME_LEN..];
     let ipv4_packet = Ipv4Packet::new_checked(&data).unwrap();
-
-    /*
-	let ipv4_repr = Ipv4Repr::parse(&ipv4_packet, &ChecksumCapabilities::default()).unwrap();
-    if !ipv4_repr.src_addr.is_unicast() {
-        // Discard packets with non-unicast source addresses.
-        return -1;
-    }
-    */
 
     let ip_payload = ipv4_packet.payload();
 
     // drop any non-UDP packets
     if let IpProtocol::Udp = ipv4_packet.protocol() {
-        println!("IP protocol OK");
+        println!("IP protocol OK (UDP)");
     } else {
-        return -1;
+        println!("Not a UDP packet, silently dropping");
+        // NOTE: UDP ports should match the settings of the VM, otherwise some packets will
+        // get lost without notifications
+        //return -1;
+        return 0;
     }
 
     // create UDP packet
@@ -204,26 +350,27 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
         let mut iface = s.iface.lock().unwrap();
         let mut sockets = s.sockets.lock().unwrap();
         let timestamp = Instant::now();
-        let handle = *s.handle.lock().unwrap();
+        let handles = s.handles.lock().unwrap();
 
-        {
-            let mut socket = sockets.get::<UdpSocket>(handle);
-
-            println!("Sending data");
-            if socket.can_send() {
-                match socket.send_slice(udp_packet.payload(), dst_endpoint) {
-                    Ok(_) => println!("data was sent"),
-                    Err(e) => println!("data not sent, error: {}", e),
+        // now iterate over sockets, and send from the one that is bound to src_endpoint
+        for handle in handles.iter() {
+            let mut socket = sockets.get::<UdpSocket>(*handle);
+            if socket.can_send() && socket.endpoint() == src_endpoint {
+                if socket.can_send() {
+                    match socket.send_slice(udp_packet.payload(), dst_endpoint) {
+                        Ok(_) => println!("data was sent"),
+                        Err(e) => println!("data not sent, error: {}", e),
+                    }
                 }
             }
         }
+
         iface.poll(&mut sockets, timestamp).expect("poll error");
         0
     } else {
-        // checks failed, no packet transmitted
+        println!("Checks failed, no packet transmitted");
         -1
     }
-    
 }
 
 /// To be called from camkes VM app.
@@ -241,93 +388,90 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
     let mut iface = s.iface.lock().unwrap();
     let mut sockets = s.sockets.lock().unwrap();
     let timestamp = Instant::now();
-    let handle = *s.handle.lock().unwrap();
+    let handles = s.handles.lock().unwrap();
 
-    //println!("Rust client_rx: polling iface");
     iface.poll(&mut sockets, timestamp).expect("poll error");
 
-    let mut socket = sockets.get::<UdpSocket>(handle); // just one handle for now (with a given port)
+    for handle in handles.iter() {
+        let mut socket = sockets.get::<UdpSocket>(*handle);
 
-    if socket.can_recv() {
-        let (data, src_endpoint) = socket.recv().unwrap(); // data: payload, endpoint: sender (IP+port)
-        println!("Rust got data from {}: {:?}", src_endpoint, data);
+        if socket.can_recv() {
+            // return dst endpoint
+            let dst_endpoint = socket.endpoint();
 
-        // make dst endpoint
-        let dst_endpoint = IpEndpoint::new(iface.ip_addrs()[0].address(), 6969);
+            let (data, src_endpoint) = socket.recv().unwrap(); // data: payload, endpoint: sender (IP+port)
+            println!("Rust got data from {}", src_endpoint);
 
-        // perform checks
-        if check_frame_in(data, src_endpoint, dst_endpoint) {
-            // checks OK, build the frame again
+            // perform checks
+            if check_frame_in(data, src_endpoint, dst_endpoint) {
+                // checks OK, build the frame again
 
-            // First generate UDP packet
-            let udp_repr = UdpRepr {
-                src_port: src_endpoint.port, // original source port
-                dst_port: 6969,              // hardcoded for now
-                payload: data,               // original payload
-            }; // can get raw UDP bytes
-            let mut udp_bytes = vec![0xa5; udp_repr.buffer_len()]; // UDP packet
-            let udp_packet_len = udp_bytes.len();
-            let mut udp_packet = UdpPacket::new(&mut udp_bytes);
-            udp_repr.emit(
-                &mut udp_packet,
-                &src_endpoint.addr,
-                &iface.ip_addrs()[0].address(),
-                &ChecksumCapabilities::default(),
-            );
-            println!("UDP packet: {:?}", udp_packet);
+                // First generate UDP packet
+                let udp_repr = UdpRepr {
+                    src_port: src_endpoint.port, // original source port
+                    dst_port: dst_endpoint.port, // original destination port
+                    payload: data,               // original payload
+                }; // can get raw UDP bytes
+                let mut udp_bytes = vec![0xa5; udp_repr.buffer_len()]; // UDP packet
+                let udp_packet_len = udp_bytes.len();
+                let mut udp_packet = UdpPacket::new(&mut udp_bytes);
+                udp_repr.emit(
+                    &mut udp_packet,
+                    &src_endpoint.addr,
+                    &iface.ip_addrs()[0].address(),
+                    &ChecksumCapabilities::default(),
+                );
 
-            // Then wrap it in an IP packet
-            let src_addr = match src_endpoint.addr {
-                IpAddress::Ipv4(adr) => adr,
-                _ => panic!("unsupported address"),
-            };
+                // Then wrap it in an IP packet
+                let src_addr = match src_endpoint.addr {
+                    IpAddress::Ipv4(adr) => adr,
+                    _ => panic!("unsupported address"),
+                };
 
-            let dst_addr = match iface.ip_addrs()[0].address() {
-                IpAddress::Ipv4(adr) => adr,
-                _ => panic!("unsupported address"),
-            };
+                let dst_addr = match iface.ip_addrs()[0].address() {
+                    IpAddress::Ipv4(adr) => adr,
+                    _ => panic!("unsupported address"),
+                };
 
-            let ip_repr = Ipv4Repr {
-                src_addr: src_addr,        // original src addr
-                dst_addr: dst_addr,        // iface (dest) addr
-                protocol: IpProtocol::Udp, // udp only
-                payload_len: udp_repr.buffer_len(),
-                hop_limit: HOP_LIMIT,
-            }; // to get raw IP packet
-            let mut ip_bytes = vec![0xa5; ip_repr.buffer_len() + udp_packet_len];
-            let mut ip_packet = Ipv4Packet::new(ip_bytes.as_mut_slice());
-            ip_repr.emit(&mut ip_packet, &ChecksumCapabilities::default());
-            ip_packet
-                .payload_mut()
-                .copy_from_slice(&udp_packet.into_inner());
+                let ip_repr = Ipv4Repr {
+                    src_addr: src_addr,        // original src addr
+                    dst_addr: dst_addr,        // iface (dest) addr
+                    protocol: IpProtocol::Udp, // udp only
+                    payload_len: udp_repr.buffer_len(),
+                    hop_limit: HOP_LIMIT,
+                }; // to get raw IP packet
+                let mut ip_bytes = vec![0xa5; ip_repr.buffer_len() + udp_packet_len];
+                let mut ip_packet = Ipv4Packet::new(ip_bytes.as_mut_slice());
+                ip_repr.emit(&mut ip_packet, &ChecksumCapabilities::default());
+                ip_packet
+                    .payload_mut()
+                    .copy_from_slice(&udp_packet.into_inner());
 
-            println!("IP packet: {:?}", ip_packet);
+                // Finally wrap it with an Ethernet frame
+                let mut eth_bytes = vec![0xa5; ETHERNET_FRAME_LEN + ip_packet.total_len() as usize];
+                let mut frame = EthernetFrame::new(&mut eth_bytes);
+                frame.set_dst_addr(iface.ethernet_addr());
+                frame.set_src_addr(iface.ethernet_addr()); // This might be a problem for the VM net stack (src == dst mac)
+                                                           //frame.set_src_addr(EthernetAddress([0x06, 0xb4, 0x88, 0x85, 0xaa, 0xb4])); // Just a dummy for now (TODO)
+                frame.set_ethertype(EthernetProtocol::Ipv4);
+                frame.payload_mut().copy_from_slice(&ip_packet.into_inner());
 
-            // Finally wrap it with an Ethernet frame
-            let mut eth_bytes = vec![0xa5; ETHERNET_FRAME_LEN + ip_packet.total_len() as usize];
-            let mut frame = EthernetFrame::new(&mut eth_bytes);
-            frame.set_dst_addr(iface.ethernet_addr());
-            frame.set_src_addr(EthernetAddress([0x06, 0xb4, 0x88, 0x85, 0xaa, 0xb4])); // Just a dummy for now (TODO)
-            frame.set_ethertype(EthernetProtocol::Ipv4);
-            frame.payload_mut().copy_from_slice(&ip_packet.into_inner());
+                let frame = frame.into_inner();
 
-            println!("Ethernet frame: {:?}", frame);
-            let frame = frame.into_inner();
-            println!("Ethernet frame len = {}", frame.len());
+                // finally copy data to the caller's buffer
+                unsafe {
+                    memcpy(client_buf(1), frame.as_ptr() as *mut c_void, frame.len());
+                    *len = frame.len() as i32;
+                }
 
-            // finally copy data to the caller's buffer
-            unsafe {
-                memcpy(client_buf(1), frame.as_ptr() as *mut c_void, frame.len());
-                *len = frame.len() as i32;
+                return 0;
+            } else {
+                // checks failed, no packet transmitted
+                unsafe {
+                    *len = 0;
+                }
+                return -1;
             }
-
-            return 0;
-        } else {
-            // checks failed, no packet transmitted
-            unsafe {
-                *len = 0;
-            }
-            return -1;
         }
     }
     0 // default
@@ -393,43 +537,6 @@ pub extern "C" fn client_mac(
     }
 }
 
-/*
-static CONFIG_STR: &'static str = include_str!("../config.ini");
-use std::sync::{Arc, Mutex, Once, ONCE_INIT};
-use std::mem;
-
-#[derive(Clone)]
-struct SingletonReader {
-    // Since we will be used in many threads, we need to protect
-    // concurrent access
-    //inner: Arc<Mutex<&'static str>>,
-}
-
-fn singleton() -> SingletonReader {
-    // Initialize it to a null value
-    static mut SINGLETON: *const SingletonReader = 0 as *const SingletonReader;
-    static ONCE: Once = ONCE_INIT;
-
-    unsafe {
-        ONCE.call_once(|| {
-            // do some parsing of the config here
-
-            // Make it
-            let singleton = SingletonReader {
-                inner: Arc::new(Mutex::new(CONFIG_STR)),
-            };
-
-            // Put it in the heap so it can outlive this call
-            SINGLETON = mem::transmute(Box::new(singleton));
-        });
-
-        // Now we give out a copy of the data that is safe to use concurrently.
-        (*SINGLETON).clone()
-    }
-}
-*/
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,9 +550,8 @@ mod tests {
         println!("];");
     }
 
-
     #[test]
     fn basic() {
-    	println!("hello testing here");
+        println!("hello testing here");
     }
 }

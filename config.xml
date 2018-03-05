@@ -1,0 +1,7 @@
+<!DOCTYPE firewall SYSTEM "firewall.dtd">
+<firewall ip_addr="192.168.69.3" netmask="24">
+  <open_ports>
+    <port number="6969"/>
+    <port number="6942"/>
+  </open_ports>
+</firewall>

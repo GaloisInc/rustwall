@@ -6,6 +6,4 @@ authors = ["Michal Podhradsky <michal.podhradsky@aggiemail.usu.edu>"]
 [dependencies]
 #smoltcp = { version = "0.4", default-features = true }
 smoltcp = { path = "/home/michal/Workspace/rust_projects/smoltcp", default-features = true, features = ["phy-sel4"] }
-log = "0.3"
-env_logger = "0.4"
-getopts = "0.2"
+xml-rs = "0.7.0"
