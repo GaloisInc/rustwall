@@ -11,3 +11,13 @@ Cargo.lock
 
 # Eclipse files
 .project
+.cproject
+
+# Libraries
+*.a
+
+# Sample executable
+main
+
+# Backup files
+*.bk
