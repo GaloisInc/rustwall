@@ -27,7 +27,7 @@ use smoltcp::wire::{IpProtocol, IpAddress, IpCidr, IpEndpoint, Ipv4Repr, Ipv4Pac
 use smoltcp::wire::{UdpRepr, UdpPacket};
 use smoltcp::iface::{NeighborCache, EthernetInterfaceBuilder, EthernetInterface};
 use smoltcp::socket::{SocketSet, SocketHandle};
-use smoltcp::socket::{UdpSocket, UdpSocketBuffer, UdpPacketBuffer};
+use smoltcp::socket::{UdpSocketBuffer, UdpSocket, UdpPacketMetadata};
 use smoltcp::time::Instant;
 use smoltcp::phy::ChecksumCapabilities;
 
@@ -210,8 +210,8 @@ fn firewall_init() -> Firewall {
 
             // initialize buffers
             for _ in 0..conf.ports.len() {
-                let udp_rx_buffer = UdpSocketBuffer::new(vec![UdpPacketBuffer::new(vec![0; 1500])]);
-                let udp_tx_buffer = UdpSocketBuffer::new(vec![UdpPacketBuffer::new(vec![0; 1500])]);
+                let udp_rx_buffer = UdpSocketBuffer::new(vec![UdpPacketMetadata::empty()], vec![0; 1500]);
+                let udp_tx_buffer = UdpSocketBuffer::new(vec![UdpPacketMetadata::empty()], vec![0; 1500]);
                 let udp_socket = UdpSocket::new(udp_rx_buffer, udp_tx_buffer);
 
                 handles.push(sockets.add(udp_socket));
