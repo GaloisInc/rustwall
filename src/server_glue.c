@@ -189,7 +189,7 @@ bool ethdriver_init(void)
 
   if (!status) {
     /* Connect to the device */
-    strcpy(tun_name, "tap0");
+    strcpy(tun_name, "tap1");
     tun_fd = tun_alloc(tun_name, IFF_TAP | IFF_NO_PI | O_NONBLOCK); /* tun interface */
 
     if (tun_fd < 0) {

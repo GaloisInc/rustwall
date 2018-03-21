@@ -31,6 +31,8 @@ use smoltcp::socket::{UdpSocketBuffer, UdpSocket, UdpPacketMetadata};
 use smoltcp::time::Instant;
 use smoltcp::phy::ChecksumCapabilities;
 
+/// add extra 20 bytes to each UDP payload to allow for packet modification in the external firewall
+static EXTRA_PACKET_CAPACITY: usize = 20;
 static HOP_LIMIT: u8 = 64;
 static ETHERNET_FRAME_LEN: usize = 14; // 6 bytes src MAC, 6 bytes dest MAC, 2 bytes Protocol
 
@@ -210,8 +212,10 @@ fn firewall_init() -> Firewall {
 
             // initialize buffers
             for _ in 0..conf.ports.len() {
-                let udp_rx_buffer = UdpSocketBuffer::new(vec![UdpPacketMetadata::empty()], vec![0; 1500]);
-                let udp_tx_buffer = UdpSocketBuffer::new(vec![UdpPacketMetadata::empty()], vec![0; 1500]);
+                let udp_rx_buffer =
+                    UdpSocketBuffer::new(vec![UdpPacketMetadata::empty()], vec![0; 1500]);
+                let udp_tx_buffer =
+                    UdpSocketBuffer::new(vec![UdpPacketMetadata::empty()], vec![0; 1500]);
                 let udp_socket = UdpSocket::new(udp_rx_buffer, udp_tx_buffer);
 
                 handles.push(sockets.add(udp_socket));
@@ -254,6 +258,62 @@ extern "C" {
     // For accessing client's buffer
     fn client_buf(cliend_id: u32) -> *mut c_void;
     fn client_emit(badge: u32);
+
+    /// for communicating with external firewall
+    /// Called after veryifying port and checksum of the UDP packet
+    /// Input:
+    /// `src_addr`    	 - IPv4 source address encoded as u32, first octet is the MSB,
+    ///				       for example 192.168.69.42 is encoded as [192,168,69,42] in memory
+    /// `src_port`	     - source port
+    /// `dst_addr` 	     - Ipv4 destination address encoded as u32, first octet is the MSB
+    /// `dst_port`       - destination port
+    /// `payload_len`    - length of UDP packet payload, i.e. the packed payload starts
+    ///				       at `payload[0]` and ends at `payload[payload_len-1]`
+    /// `payload` 	  	 - pointer to an array containing UDP packet payload
+    /// `max_payload_len - maximal length of payload, i.e. the maximal length of the allocated
+    ///					   array in the memory. If packet needs to be modified, data can be added
+    ///					   to `payload` until `payload[max_payload_len-1]`
+    ///
+    /// Output: length of the UDP payload to be received from `src_addr:src_port` at `dst_addr:dst_port`
+    ///		    Note that if the UDP payload is approved and was unchanged, simply return `payload_len`
+    ///         Return 0 if the payload is rejected.
+    fn packet_in(
+        src_addr: u32,
+        src_port: u16,
+        dst_addr: u32,
+        dst_port: u16,
+        payload_len: u16,
+        payload: *const u8,
+        max_payload_len: u16,
+    ) -> u16;
+
+    /// for communicating with external firewall
+    /// Called after constructing a UDP packet and verifying its checksum and port number
+    /// Input:
+    /// `src_addr`    	 - IPv4 source address encoded as u32, first octet is the MSB,
+    ///				       for example 192.168.69.42 is encoded as [192,168,69,42] in memory
+    /// `src_port`	     - source port
+    /// `dst_addr` 	     - Ipv4 destination address encoded as u32, first octet is the MSB
+    /// `dst_port`       - destination port
+    /// `payload_len`    - length of UDP packet payload, i.e. the packed payload starts
+    ///				       at `payload[0]` and ends at `payload[payload_len-1]`
+    /// `payload` 	  	 - pointer to an array containing UDP packet payload
+    /// `max_payload_len - maximal length of payload, i.e. the maximal length of the allocated
+    ///					   array in the memory. If packet needs to be modified, data can be added
+    ///					   to `payload` until `payload[max_payload_len-1]`
+    ///
+    /// Output: length of the UDP payload to be received from `src_addr:src_port` at `dst_addr:dst_port`
+    ///		    Note that if the UDP payload is approved and was unchanged, simply return `payload_len`
+    ///         Return 0 if the payload is rejected.
+    fn packet_out(
+        src_addr: u32,
+        src_port: u16,
+        dst_addr: u32,
+        dst_port: u16,
+        payload_len: u16,
+        payload: *const u8,
+        max_payload_len: u16,
+    ) -> u16;
 }
 
 /// Pass the device MAC address to the callee
@@ -291,12 +351,16 @@ fn sel4_client_transmute(len: usize) -> Vec<u8> {
 
 /// To be called from camkes VM app.
 /// Transmits `len` bytes from `client_buf` to `ethdriver_buf`.
-/// Returns -1 if some error happens, other values are OK (typically it is 0).
+/// Returns -1 if some error happens (such as a packet is declined), other values are OK (typically it is 0).
 /// Expects raw ethernet frames.
+/// Allows transmission of only UDP packets at explicitly specified ports (see `FirewallConfig`)
+/// Validates packet checksum before transmission
 ///
-/// 1. copy client data
-/// 2. construct an ethernet frame and perform checks
-/// 3. if all good, then transnmit
+/// 1. copy and parse client data (ethernet frame -> Ipv4 packet -> UDP packet)
+/// 2. call external firewall if the source port is allowed
+/// 3. if the packet is approved to be transmitted, reconstruct a Ipv4 packet and an ethernet frame
+///    with the potentially modified UDP payload (i.e. UDP Payload -> IPv4 packet -> Ethernet frame)
+/// 4. copy the ethernet frame to the ethdriver buffer
 #[no_mangle]
 pub extern "C" fn client_tx(len: i32) -> i32 {
     assert!(len >= 0);
@@ -324,9 +388,6 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
         println!("IP protocol OK (UDP)");
     } else {
         println!("Not a UDP packet, silently dropping");
-        // NOTE: UDP ports should match the settings of the VM, otherwise some packets will
-        // get lost without notifications
-        //return -1;
         return 0;
     }
 
@@ -343,44 +404,95 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
         udp_packet.src_port(),
     );
 
-    // perform checks
-    if check_frame_out(&udp_packet.payload(), src_endpoint, dst_endpoint) {
-        // all OK, pass data to ethdriver's transmit buffer
-        let s = firewall_init();
-        let mut iface = s.iface.lock().unwrap();
-        let mut sockets = s.sockets.lock().unwrap();
-        let timestamp = Instant::now();
-        let handles = s.handles.lock().unwrap();
+    let s = firewall_init();
+    let mut iface = s.iface.lock().unwrap();
+    let mut sockets = s.sockets.lock().unwrap();
+    let timestamp = Instant::now();
+    let handles = s.handles.lock().unwrap();
 
-        // now iterate over sockets, and send from the one that is bound to src_endpoint
-        for handle in handles.iter() {
-            let mut socket = sockets.get::<UdpSocket>(*handle);
-            if socket.can_send() && socket.endpoint() == src_endpoint {
-                if socket.can_send() {
-                    match socket.send_slice(udp_packet.payload(), dst_endpoint) {
+    // now iterate over sockets, and send from the one that is bound to src_endpoint
+    for handle in handles.iter() {
+        let mut socket = sockets.get::<UdpSocket>(*handle);
+        if socket.can_send() && socket.endpoint() == src_endpoint {
+            if socket.can_send() {
+                // get proper addresses
+                let src_addr_bytes = match src_endpoint.addr {
+                    IpAddress::Ipv4(adr) => {
+                        let mut bytes = [0, 0, 0, 0];
+                        bytes[..].clone_from_slice(adr.as_bytes());
+                        unsafe { mem::transmute::<[u8; 4], u32>(bytes) }
+                    }
+                    _ => panic!("unsupported address"),
+                };
+
+                let dst_addr_bytes = match dst_endpoint.addr {
+                    IpAddress::Ipv4(adr) => {
+                        let mut bytes = [0, 0, 0, 0];
+                        bytes[..].clone_from_slice(adr.as_bytes());
+                        unsafe { mem::transmute::<[u8; 4], u32>(bytes) }
+                    }
+                    _ => panic!("unsupported address"),
+                };
+
+                // make data mutable
+                let mut udp_data =
+                    Vec::with_capacity(udp_packet.payload().len() + EXTRA_PACKET_CAPACITY);
+                udp_data.extend_from_slice(udp_packet.payload());
+
+                let data_len = udp_data.len();
+                let max_data_len = udp_data.capacity();
+                let data_ptr = udp_data.as_mut_ptr();
+
+                // call external firewall
+                let ret_len = unsafe {
+                    packet_out(
+                        src_addr_bytes,
+                        src_endpoint.port,
+                        dst_addr_bytes,
+                        dst_endpoint.port,
+                        data_len as u16,
+                        data_ptr, // payload can be changed by the external firewall
+                        max_data_len as u16, // identical to current payload length for now
+                    )
+                };
+
+                // update vector
+                unsafe {
+                    mem::forget(udp_data);
+                    udp_data = Vec::from_raw_parts(data_ptr, ret_len as usize, max_data_len);
+                }
+
+                if ret_len > 0 {
+                    // packet was approved, send it
+                    match socket.send_slice(&udp_data, dst_endpoint) {
                         Ok(_) => println!("data was sent"),
                         Err(e) => println!("data not sent, error: {}", e),
                     }
+                } else {
+                    println!("Checks failed, no packet transmitted");
+                    return -1;
                 }
             }
         }
-
-        iface.poll(&mut sockets, timestamp).expect("poll error");
-        0
-    } else {
-        println!("Checks failed, no packet transmitted");
-        -1
     }
+
+    iface.poll(&mut sockets, timestamp).expect("client tx poll error");
+    0
 }
 
 /// To be called from camkes VM app.
 /// Receives `len` bytes of data into `client_buf`.
-/// Returns -1 if some error happens, other values are OK (typically it is 0).
+/// Returns -1 if some error happens (such as a packet is declined), other values are OK (typically it is 0).
 /// Returns raw ethernet frames.
+/// Allows reception of only UDP packets at explicitly specified ports (see `FirewallConfig`)
+/// Validates packet checksum upon reception.
 ///
-/// 1. receive data from ethernet driver
-/// 2. perform checks
-/// 3. if all good, copy to client buffer
+/// 1. receive data from at most one bound socket
+/// 2. call external firewall
+/// 3. if the packet is approved, construct a full IPv4 packet and an etherent frame
+///    from the potentially modified payload (i.e. UDP payload -> IPv4 packet -> Ethernet frame)
+///    before passing data to the client buffer
+/// 4. copy the ethernet frame to the client buffer
 #[no_mangle]
 pub extern "C" fn client_rx(len: *mut i32) -> i32 {
     // get data from ethernet driver
@@ -390,7 +502,7 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
     let timestamp = Instant::now();
     let handles = s.handles.lock().unwrap();
 
-    iface.poll(&mut sockets, timestamp).expect("poll error");
+    iface.poll(&mut sockets, timestamp).expect("client_rx poll error");
 
     for handle in handles.iter() {
         let mut socket = sockets.get::<UdpSocket>(*handle);
@@ -402,15 +514,60 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
             let (data, src_endpoint) = socket.recv().unwrap(); // data: payload, endpoint: sender (IP+port)
             println!("Rust got data from {}", src_endpoint);
 
-            // perform checks
-            if check_frame_in(data, src_endpoint, dst_endpoint) {
+            // get proper addresses
+            let src_addr_bytes = match src_endpoint.addr {
+                IpAddress::Ipv4(adr) => {
+                    let mut bytes = [0, 0, 0, 0];
+                    bytes[..].clone_from_slice(adr.as_bytes());
+                    unsafe { mem::transmute::<[u8; 4], u32>(bytes) }
+                }
+                _ => panic!("unsupported address"),
+            };
+
+            let dst_addr_bytes = match dst_endpoint.addr {
+                IpAddress::Ipv4(adr) => {
+                    let mut bytes = [0, 0, 0, 0];
+                    bytes[..].clone_from_slice(adr.as_bytes());
+                    unsafe { mem::transmute::<[u8; 4], u32>(bytes) }
+                }
+                _ => panic!("unsupported address"),
+            };
+
+            // make data mutable
+            let mut udp_data = Vec::with_capacity(data.len() + EXTRA_PACKET_CAPACITY);
+            udp_data.extend_from_slice(data);
+
+            let data_len = udp_data.len();
+            let max_data_len = udp_data.capacity();
+            let data_ptr = udp_data.as_mut_ptr();
+
+            // call external firewall
+            let ret_len = unsafe {
+                packet_in(
+                    src_addr_bytes,
+                    src_endpoint.port,
+                    dst_addr_bytes,
+                    dst_endpoint.port,
+                    data_len as u16,
+                    data_ptr,            // payload can be changed by the external firewall
+                    max_data_len as u16, // identical to current payload length for now
+                )
+            };
+
+            // update vector
+            unsafe {
+                mem::forget(udp_data);
+                udp_data = Vec::from_raw_parts(data_ptr, ret_len as usize, max_data_len);
+            }
+
+            if ret_len > 0 {
                 // checks OK, build the frame again
 
                 // First generate UDP packet
                 let udp_repr = UdpRepr {
-                    src_port: src_endpoint.port, // original source port
-                    dst_port: dst_endpoint.port, // original destination port
-                    payload: data,               // original payload
+                    src_port: src_endpoint.port,
+                    dst_port: dst_endpoint.port,
+                    payload: &udp_data,
                 }; // can get raw UDP bytes
                 let mut udp_bytes = vec![0xa5; udp_repr.buffer_len()]; // UDP packet
                 let udp_packet_len = udp_bytes.len();
@@ -428,7 +585,7 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
                     _ => panic!("unsupported address"),
                 };
 
-                let dst_addr = match iface.ip_addrs()[0].address() {
+                let dst_addr = match dst_endpoint.addr {
                     IpAddress::Ipv4(adr) => adr,
                     _ => panic!("unsupported address"),
                 };
@@ -484,41 +641,6 @@ pub extern "C" fn ethdriver_has_data_callback(_badge: u32) {
     unsafe {
         client_emit(1);
     }
-}
-
-/// Perform checks on an outgoing packet
-/// returns `true` if the packet is OK to be sent
-/// Bonus: call the external firewall function
-///
-/// Input: UDP packet payload
-///		   destination's endpoint (Ip addr + port)
-/// Sender is obvious.
-///
-/// We are checking for:
-/// 1. destination IP is allowed
-/// 2. destination port is allowed
-/// 3. source port is allowed (one from the bound sockets) // TODO: check if a separate port for sending is needed
-fn check_frame_out(_tx_data: &[u8], _src: IpEndpoint, _dst: IpEndpoint) -> bool {
-    // TODO: Dummy for now
-    true
-}
-
-/// Perform checks on an incoming packet
-/// returns `true` if the packet is OK to be received
-/// Bonus: call the external firewall function
-///
-/// Input: UDP packet payload
-///		   sender's IpEndpoint (Ip addr + port)
-/// Destination is obvious. Port is statically set,
-/// and can be retrieved from a socket handle. So no UDP packet
-/// is received unless a socket is explicitly bound to a port
-///
-/// We are checking for:
-/// 1. sender IP is allowed
-/// 2. Maybe sender port?
-fn check_frame_in(_rx_data: &[u8], _src: IpEndpoint, _dst: IpEndpoint) -> bool {
-    // TODO: Dummy for now
-    true
 }
 
 /// get eth device's MAC address
