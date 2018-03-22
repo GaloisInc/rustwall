@@ -451,8 +451,8 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
                         dst_addr_bytes,
                         dst_endpoint.port,
                         data_len as u16,
-                        data_ptr, // payload can be changed by the external firewall
-                        max_data_len as u16, // identical to current payload length for now
+                        data_ptr,
+                        max_data_len as u16,
                     )
                 };
 
@@ -549,8 +549,8 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
                     dst_addr_bytes,
                     dst_endpoint.port,
                     data_len as u16,
-                    data_ptr,            // payload can be changed by the external firewall
-                    max_data_len as u16, // identical to current payload length for now
+                    data_ptr,
+                    max_data_len as u16,
                 )
             };
 
