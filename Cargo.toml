@@ -3,6 +3,10 @@ name = "rustwall"
 version = "0.1.0"
 authors = ["Michal Podhradsky <michal.podhradsky@aggiemail.usu.edu>"]
 
+[lib]
+path = "src/lib.rs"
+crate-type = ["staticlib"]
+
 [dependencies]
 log = "0.3"
 env_logger = "0.4"
