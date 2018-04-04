@@ -15,7 +15,7 @@ Current status:
 - FFI bindings for additional external packet inspection are provided
 
 ## Architecture
-![Architecture](https://www.lucidchart.com/publicSegments/view/23a0af02-6e63-4bb1-b8b4-a4e9d2471e7d/image.png)
+![Architecture](https://www.lucidchart.com/publicSegments/view/0e227a9e-cf7c-463b-bdc2-9c20ee692e59/image.png)
 
 ## Deployment
 To be used in a true seL4 environment, Rustwall has to be compiled using [rust-camkes](https://github.com/aisamanra/rust-camkes-samples). This is currently work in progress, more info will follow.
