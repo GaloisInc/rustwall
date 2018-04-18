@@ -24,7 +24,7 @@ extern "C" {
 /// void client_mac(uint8_t *b1, uint8_t *b2, uint8_t *b3, uint8_t *b4, uint8_t *b5, uint8_t *b6)
 #[no_mangle]
 pub extern "C" fn client_mac(b1: &mut u8, b2: &mut u8, b3: &mut u8, b4: &mut u8, b5: &mut u8, b6: &mut u8) {
-    println!("client_mac: b1={:?}, b2={:?}, b3={:?}, b4={:?}, b5={:?}, b6={:?}", b1, b2, b3, b4, b5, b6);
+    //println!("client_mac: b1={:?}, b2={:?}, b3={:?}, b4={:?}, b5={:?}, b6={:?}", b1, b2, b3, b4, b5, b6);
     unsafe {
     	ethdriver_mac(b1,b2,b3,b4,b5,b6);
     }
