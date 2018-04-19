@@ -6,15 +6,3 @@ authors = ["Michal Podhradsky <michal.podhradsky@aggiemail.usu.edu>"]
 [lib]
 path = "src/lib.rs"
 crate-type = ["staticlib"]
-
-[dependencies]
-log = "0.3"
-env_logger = "0.4"
-getopts = "0.2"
-
-[dependencies.smoltcp]
-default-features = true
-path = "../../../../../projects/smoltcp"
-
-[replace]
-"libc:0.2.40" = { git = 'https://github.com/aisamanra/liblibc.git' }
