@@ -246,7 +246,7 @@ void ethdriver_mac(uint8_t *b1, uint8_t *b2, uint8_t *b3, uint8_t *b4,
 int main()
 {
   /* Connect to the device */
-  strcpy(tun_name, "tap0");
+  strcpy(tun_name, "tap1");
   tun_fd = tun_alloc(tun_name, IFF_TAP | IFF_NO_PI | O_NONBLOCK); /* tun interface */
 
   if (tun_fd < 0) {
@@ -299,11 +299,11 @@ int main()
    printf("C ethdriver_buf address = %p\n", ethdriver_buf);
    printf("C from_ethdriver_data address = %p\n", &from_ethdriver_data);
    */
-/*  // client receive
+  // client receive
   printf("Client receive call 1\n");
   returnval = client_rx(&len);
   printf("client_rx received %u bytes with return value %i\n", len, returnval);
-*/
+
   /*
    printf("C client_buf[0] = %u\n", to_client_1_data.content[0]);
    printf("C client_buf[1] = %u\n", to_client_1_data.content[1]);

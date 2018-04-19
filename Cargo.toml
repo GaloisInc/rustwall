@@ -3,6 +3,16 @@ name = "rustwall"
 version = "0.1.0"
 authors = ["Michal Podhradsky <michal.podhradsky@aggiemail.usu.edu>"]
 
+[lib]
+path = "src/lib.rs"
+crate-type = ["staticlib"]
+
 [dependencies]
-smoltcp = { git = "https://github.com/podhrmic/smoltcp", branch = "sel4", default-features = true, features = ["phy-sel4"] }
-xml-rs = "0.7.0"
+smoltcp = { git = "https://github.com/podhrmic/smoltcp", branch = "sel4", default-features = false, features = ["proto-ipv4", "proto-ipv6",
+  "socket-raw", "socket-icmp", "socket-udp", "socket-tcp"] }
+
+[features]
+"passthrough" = []
+"external-firewall" = []
+"debug-print" = []
+default = ["passthrough","external-firewall"]
