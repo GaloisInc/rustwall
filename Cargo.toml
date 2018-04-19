@@ -11,6 +11,16 @@ crate-type = ["staticlib"]
 smoltcp = { git = "https://github.com/podhrmic/smoltcp", branch = "sel4", default-features = false, features = ["proto-ipv4", "proto-ipv6",
   "socket-raw", "socket-icmp", "socket-udp", "socket-tcp"] }
 
+
+[dependencies.smoltcp]
+default-features = false
+features = ["proto-ipv4", "proto-ipv6",
+  "socket-raw", "socket-icmp", "socket-udp", "socket-tcp"]
+path = "../../../../../projects/smoltcp"
+
+[replace]
+"libc:0.2.40" = { git = 'https://github.com/aisamanra/liblibc.git' }
+
 [features]
 "passthrough" = []
 "external-firewall" = []
