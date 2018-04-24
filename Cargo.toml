@@ -25,4 +25,4 @@ path = "../../../../../projects/smoltcp"
 "passthrough" = []
 "external-firewall" = []
 "debug-print" = []
-default = ["passthrough","external-firewall"]
+default = ["passthrough"]

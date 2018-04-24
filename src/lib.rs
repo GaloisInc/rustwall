@@ -217,6 +217,7 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
 /// - Ipv4 packet is well formed && of ICMP protocol (passthrough)
 /// - Ipv4 packet is well formed && of UDP protocol && passes external firewall (external firewall)
 /// otherwise returns error
+#[cfg(feature = "external-firewall")]
 fn client_rx_process_ipv4<'frame>(
     eth_frame: &'frame EthernetFrame<&'frame [u8]>,
     _len: *mut i32,
@@ -247,6 +248,7 @@ fn client_rx_process_ipv4<'frame>(
 /// Process UDP payload
 /// return OK if UDP packet is well formed && passes external firewall
 /// return Err otherwise
+#[cfg(feature = "external-firewall")]
 fn client_rx_process_udp<'frame>(ip_repr: IpRepr, ip_payload: &'frame [u8]) -> Result<()> {
     let (src_addr, dst_addr) = (ip_repr.src_addr(), ip_repr.dst_addr());
     let udp_packet = UdpPacket::new_checked(ip_payload)?;
