@@ -123,11 +123,30 @@ pub extern "C" fn client_mac(
     }
 }
 
+/// Pass the device MAC address to the callee
+fn get_device_mac() -> EthernetAddress {
+    let mut b1: u8 = 0;
+    let mut b2: u8 = 0;
+    let mut b3: u8 = 0;
+    let mut b4: u8 = 0;
+    let mut b5: u8 = 0;
+    let mut b6: u8 = 0;
+
+    unsafe {
+        ethdriver_mac(&mut b1, &mut b2, &mut b3, &mut b4, &mut b5, &mut b6);
+    }
+
+    EthernetAddress([b1, b2, b3, b4, b5, b6])
+}
+
 /// transmit `len` bytes from `client_buf` to `ethdriver_buf`
 /// returns number of transmitted bytes
 /// int client_tx(int len)
 #[no_mangle]
 pub extern "C" fn client_tx(len: i32) -> i32 {
+
+
+
     unsafe {
         memcpy(ethdriver_buf, client_buf(1), len as usize);
     }
@@ -155,18 +174,7 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
     };
 
     // Ignore any packets not directed to our hardware address.
-    let mut addr: [u8; 6] = [0; 6];
-    unsafe {
-        ethdriver_mac(
-            &mut addr[0],
-            &mut addr[1],
-            &mut addr[2],
-            &mut addr[3],
-            &mut addr[4],
-            &mut addr[5],
-        );
-    }
-    let local_ethernet_addr: EthernetAddress = EthernetAddress::from_bytes(&addr);
+    let local_ethernet_addr = get_device_mac();
     if !eth_frame.dst_addr().is_broadcast() && !eth_frame.dst_addr().is_multicast()
         && eth_frame.dst_addr() != local_ethernet_addr
     {
@@ -192,6 +200,11 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
                     return 0;
                 }
             }
+        }
+        #[cfg(feature = "proto-ipv6")]
+        EthernetProtocol::Ipv6 => {
+            // Ipv6 traffic is not allowed
+            return 0;
         }
         // passthrough the traffic ?
         _ => {
@@ -220,8 +233,7 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
 #[cfg(feature = "external-firewall")]
 fn client_rx_process_ipv4<'frame>(
     eth_frame: &'frame EthernetFrame<&'frame [u8]>,
-    _len: *mut i32,
-) -> Result<&'frame EthernetFrame<&'frame [u8]>> {
+    len: *mut i32) -> Result<&'frame EthernetFrame<&'frame [u8]>> {
     let ipv4_packet = Ipv4Packet::new_checked(eth_frame.payload())?;
     let checksum_caps = ChecksumCapabilities::default();
     let ipv4_repr = Ipv4Repr::parse(&ipv4_packet, &checksum_caps)?;
@@ -233,7 +245,7 @@ fn client_rx_process_ipv4<'frame>(
         IpProtocol::Icmp => return Ok(eth_frame),
         IpProtocol::Udp => {
             /* check with external firewall */
-            match client_rx_process_udp(ip_repr, ip_payload) {
+            match client_rx_process_udp(ip_repr, ip_payload, len) {
                 Ok(_) => return Ok(eth_frame),
                 Err(_) => return Err(Error::Illegal),
             }
@@ -249,7 +261,7 @@ fn client_rx_process_ipv4<'frame>(
 /// return OK if UDP packet is well formed && passes external firewall
 /// return Err otherwise
 #[cfg(feature = "external-firewall")]
-fn client_rx_process_udp<'frame>(ip_repr: IpRepr, ip_payload: &'frame [u8]) -> Result<()> {
+fn client_rx_process_udp<'frame>(ip_repr: IpRepr, ip_payload: &'frame [u8], _len: *mut i32) -> Result<()> {
     let (src_addr, dst_addr) = (ip_repr.src_addr(), ip_repr.dst_addr());
     let udp_packet = UdpPacket::new_checked(ip_payload)?;
     let checksum_caps = ChecksumCapabilities::default();
@@ -310,13 +322,12 @@ pub extern "C" fn ethdriver_has_data_callback(_badge: u32) {
 /// To be called from `client_rx`
 /// Coverts client data into `[u8]` and returns it.
 /// The slice can be empty
-fn sel4_ethdriver_transmute<'a>(len: *mut i32) -> &'a [u8] {
+fn sel4_ethdriver_transmute<'a>(len: usize, buffer: *mut c_void) -> &'a [u8] {
     unsafe {
-        assert!(!ethdriver_buf.is_null());
-        // create a slice of length `len` from `client_buf`
-        let local_buf_ptr = core::mem::transmute::<*mut c_void, *mut u8>(ethdriver_buf);
-        let slice = core::slice::from_raw_parts(local_buf_ptr, *len as usize);
-
+        assert!(!buffer.is_null());
+        // create a slice of length `len` from the buffer
+        let local_buf_ptr = core::mem::transmute::<*mut c_void, *mut u8>(buffer);
+        let slice = core::slice::from_raw_parts(local_buf_ptr, len);
         slice
     }
 }
