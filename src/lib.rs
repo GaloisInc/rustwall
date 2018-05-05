@@ -144,8 +144,9 @@ fn get_device_mac() -> EthernetAddress {
 /// int client_tx(int len)
 #[no_mangle]
 pub extern "C" fn client_tx(len: i32) -> i32 {
+    let mut len = len;
     // client_buf contains ethernet frame, attempt to parse it
-    let eth_frame = match EthernetFrame::new_checked(sel4_ethdriver_transmute(len, client_buf(1))) {
+    let eth_frame = match EthernetFrame::new_checked(sel4_ethdriver_transmute(len as usize, client_buf(1))) {
         Ok(frame) => frame,
         Err(_) => return 0,
     };
@@ -227,7 +228,7 @@ fn client_tx_process_ipv4<'frame>(
 /// return OK if UDP packet is well formed && passes external firewall
 /// return Err otherwise
 #[cfg(feature = "external-firewall")]
-fn client_rx_process_udp<'frame>(ip_repr: IpRepr, ip_payload: &'frame [u8], _len: *mut i32) -> Result<()> {
+fn client_tx_process_udp<'frame>(ip_repr: IpRepr, ip_payload: &'frame [u8], _len: *mut i32) -> Result<()> {
     let (src_addr, dst_addr) = (ip_repr.src_addr(), ip_repr.dst_addr());
     let udp_packet = UdpPacket::new_checked(ip_payload)?;
     let checksum_caps = ChecksumCapabilities::default();
@@ -292,7 +293,7 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
     }
 
     // ethdriver_buf contains ethernet frame, attempt to parse it
-    let eth_frame = match EthernetFrame::new_checked(sel4_ethdriver_transmute(*len, ethdriver_buf)) {
+    let eth_frame = match EthernetFrame::new_checked(sel4_ethdriver_transmute(*len as usize, ethdriver_buf)) {
         Ok(frame) => frame,
         Err(_) => return 0,
     };
