@@ -146,9 +146,9 @@ fn get_device_mac() -> EthernetAddress {
 pub extern "C" fn client_tx(len: i32) -> i32 {
     let mut len = len;
     // client_buf contains ethernet frame, attempt to parse it
-    let eth_frame = match EthernetFrame::new_checked(sel4_ethdriver_transmute(len as usize, client_buf(1))) {
-        Ok(frame) => frame,
-        Err(_) => return 0,
+    let eth_frame = match EthernetFrame::new_checked(sel4_ethdriver_tx_transmute(&mut len)) {
+      Ok(frame) => frame,
+      Err(_) => return 0,
     };
 
     // Check if we have ipv4 traffic
@@ -159,7 +159,7 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
             unsafe {
                 printf(b"TX: client_rx_process_ipv4\n\0".as_ptr() as *const i8);
             }
-            match client_tx_process_ipv4(&eth_frame, len) {
+            match client_tx_process_ipv4(&eth_frame, &mut len) {
                 Ok(_) => { /* pass the packet */ }
                 Err(_) => {
                     /* error occured */
@@ -293,7 +293,7 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
     }
 
     // ethdriver_buf contains ethernet frame, attempt to parse it
-    let eth_frame = match EthernetFrame::new_checked(sel4_ethdriver_transmute(*len as usize, ethdriver_buf)) {
+    let eth_frame = match EthernetFrame::new_checked(sel4_ethdriver_rx_transmute(len)) {
         Ok(frame) => frame,
         Err(_) => return 0,
     };
@@ -447,12 +447,25 @@ pub extern "C" fn ethdriver_has_data_callback(_badge: u32) {
 /// To be called from `client_rx`
 /// Coverts client data into `[u8]` and returns it.
 /// The slice can be empty
-fn sel4_ethdriver_transmute<'a>(len: usize, buffer: *mut c_void) -> &'a [u8] {
+fn sel4_ethdriver_rx_transmute<'a>(len: *mut i32) -> &'a [u8] {
     unsafe {
-        assert!(!buffer.is_null());
+        assert!(!ethdriver_buf.is_null());
         // create a slice of length `len` from the buffer
-        let local_buf_ptr = core::mem::transmute::<*mut c_void, *mut u8>(buffer);
-        let slice = core::slice::from_raw_parts(local_buf_ptr, len);
+        let local_buf_ptr = core::mem::transmute::<*mut c_void, *mut u8>(ethdriver_buf);
+        let slice = core::slice::from_raw_parts(local_buf_ptr, *len as usize);
+        slice
+    }
+}
+
+/// To be called from `client_tx`
+/// Coverts client data into `[u8]` and returns it.
+/// The slice can be empty
+fn sel4_ethdriver_tx_transmute<'a>(len: *mut i32) -> &'a [u8] {
+    unsafe {
+        assert!(!client_buf(1).is_null());
+        // create a slice of length `len` from the buffer
+        let local_buf_ptr = core::mem::transmute::<*mut c_void, *mut u8>(client_buf(1));
+        let slice = core::slice::from_raw_parts(local_buf_ptr, *len as usize);
         slice
     }
 }
