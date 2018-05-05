@@ -2,7 +2,6 @@
 name = "rustwall"
 version = "0.1.0"
 authors = ["Michal Podhradsky <michal.podhradsky@aggiemail.usu.edu>"]
-build = "build.rs"
 
 [lib]
 path = "src/lib.rs"
