@@ -13,11 +13,3 @@ features = ["proto-ipv4", "proto-ipv6",
   "socket-raw", "socket-icmp", "socket-udp", "socket-tcp"]
 path = "../../../../../projects/smoltcp"
 
-[replace]
-"libc:0.2.40" = { git = 'https://github.com/aisamanra/liblibc.git' }
-
-[features]
-"passthrough" = []
-"external-firewall" = []
-"debug-print" = []
-default = ["passthrough","external-firewall"]

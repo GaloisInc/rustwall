@@ -66,7 +66,6 @@ extern "C" {
     /// Output: length of the UDP payload to be received from `src_addr:src_port` at `dst_addr:dst_port`
     ///		    Note that if the UDP payload is approved and was unchanged, simply return `payload_len`
     ///         Return 0 if the payload is rejected.
-    #[cfg(feature = "external-firewall")]
     fn packet_in(
         src_addr: u32,
         src_port: u16,
@@ -95,7 +94,6 @@ extern "C" {
     /// Output: length of the UDP payload to be received from `src_addr:src_port` at `dst_addr:dst_port`
     ///		    Note that if the UDP payload is approved and was unchanged, simply return `payload_len`
     ///         Return 0 if the payload is rejected.
-    #[cfg(feature = "external-firewall")]
     fn packet_out(
         src_addr: u32,
         src_port: u16,
@@ -153,12 +151,7 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
 
     // Check if we have ipv4 traffic
     match eth_frame.ethertype() {
-        #[cfg(feature = "external-firewall")]
         EthernetProtocol::Ipv4 => {
-            #[cfg(feature = "debug-print")]
-            unsafe {
-                printf(b"TX: client_rx_process_ipv4\n\0".as_ptr() as *const i8);
-            }
             match client_tx_process_ipv4(&eth_frame, &mut len) {
                 Ok(_) => { /* pass the packet */ }
                 Err(_) => {
@@ -174,12 +167,7 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
         }
         // passthrough the traffic ?
         _ => {
-            #[cfg(feature = "debug-print")]
-            unsafe {
-                printf(b"TX: unknown ethertype\n\0".as_ptr() as *const i8);
-            }
-            #[cfg(not(feature = "passthrough"))]
-            return 0;
+            /* do nothing */
         }
     }
 
@@ -196,7 +184,6 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
 /// - Ipv4 packet is well formed && of ICMP protocol (passthrough)
 /// - Ipv4 packet is well formed && of UDP protocol && passes external firewall (external firewall)
 /// otherwise returns error
-#[cfg(feature = "external-firewall")]
 fn client_tx_process_ipv4<'frame>(
     eth_frame: &'frame EthernetFrame<&'frame [u8]>,
     len: *mut i32) -> Result<&'frame EthernetFrame<&'frame [u8]>> {
@@ -227,7 +214,6 @@ fn client_tx_process_ipv4<'frame>(
 /// Process UDP payload
 /// return OK if UDP packet is well formed && passes external firewall
 /// return Err otherwise
-#[cfg(feature = "external-firewall")]
 fn client_tx_process_udp<'frame>(ip_repr: IpRepr, ip_payload: &'frame [u8], _len: *mut i32) -> Result<()> {
     let (src_addr, dst_addr) = (ip_repr.src_addr(), ip_repr.dst_addr());
     let udp_packet = UdpPacket::new_checked(ip_payload)?;
@@ -254,10 +240,6 @@ fn client_tx_process_udp<'frame>(ip_repr: IpRepr, ip_payload: &'frame [u8], _len
     };
 
     // call external firewall
-    #[cfg(feature = "debug-print")]
-    unsafe {
-        printf(b"TX: Calling external firewall\n\0".as_ptr() as *const i8);
-    }
     let ret_len = unsafe {
         packet_out(
             src_addr_bytes,
@@ -287,11 +269,6 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
         return result;
     }
 
-    #[cfg(feature = "debug-print")]
-    unsafe {
-        printf(b"RX: parsing eth frame\n\0".as_ptr() as *const i8);
-    }
-
     // ethdriver_buf contains ethernet frame, attempt to parse it
     let eth_frame = match EthernetFrame::new_checked(sel4_ethdriver_rx_transmute(len)) {
         Ok(frame) => frame,
@@ -303,21 +280,12 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
     if !eth_frame.dst_addr().is_broadcast() && !eth_frame.dst_addr().is_multicast()
         && eth_frame.dst_addr() != local_ethernet_addr
     {
-        #[cfg(feature = "debug-print")]
-        unsafe {
-            printf(b"RX: not my address\n\0".as_ptr() as *const i8);
-        }
         return 0;
     }
 
     // Check if we have ipv4 traffic
     match eth_frame.ethertype() {
-        #[cfg(feature = "external-firewall")]
         EthernetProtocol::Ipv4 => {
-            #[cfg(feature = "debug-print")]
-            unsafe {
-                printf(b"RX: client_rx_process_ipv4\n\0".as_ptr() as *const i8);
-            }
             match client_rx_process_ipv4(&eth_frame, len) {
                 Ok(_) => { /* pass the packet */ }
                 Err(_) => {
@@ -333,12 +301,7 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
         }
         // passthrough the traffic ?
         _ => {
-            #[cfg(feature = "debug-print")]
-            unsafe {
-                printf(b"RX: unknown ethertype\n\0".as_ptr() as *const i8);
-            }
-            #[cfg(not(feature = "passthrough"))]
-            return 0;
+              /* do nothing */
         }
     }
 
@@ -355,7 +318,6 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
 /// - Ipv4 packet is well formed && of ICMP protocol (passthrough)
 /// - Ipv4 packet is well formed && of UDP protocol && passes external firewall (external firewall)
 /// otherwise returns error
-#[cfg(feature = "external-firewall")]
 fn client_rx_process_ipv4<'frame>(
     eth_frame: &'frame EthernetFrame<&'frame [u8]>,
     len: *mut i32) -> Result<&'frame EthernetFrame<&'frame [u8]>> {
@@ -385,7 +347,6 @@ fn client_rx_process_ipv4<'frame>(
 /// Process UDP payload
 /// return OK if UDP packet is well formed && passes external firewall
 /// return Err otherwise
-#[cfg(feature = "external-firewall")]
 fn client_rx_process_udp<'frame>(ip_repr: IpRepr, ip_payload: &'frame [u8], _len: *mut i32) -> Result<()> {
     let (src_addr, dst_addr) = (ip_repr.src_addr(), ip_repr.dst_addr());
     let udp_packet = UdpPacket::new_checked(ip_payload)?;
@@ -412,10 +373,6 @@ fn client_rx_process_udp<'frame>(ip_repr: IpRepr, ip_payload: &'frame [u8], _len
     };
 
     // call external firewall
-    #[cfg(feature = "debug-print")]
-    unsafe {
-        printf(b"RX: Calling external firewall\n\0".as_ptr() as *const i8);
-    }
     let ret_len = unsafe {
         packet_in(
             src_addr_bytes,
