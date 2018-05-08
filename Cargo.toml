@@ -14,7 +14,7 @@ features = ["proto-ipv4", "proto-ipv6",
 path = "../../../../../projects/smoltcp"
 
 [replace]
-"libc:0.2.40" = { git = 'https://github.com/aisamanra/liblibc.git' }
+"libc:0.2.40" = { git = 'https://github.com/GaloisInc/rs_liblibc.git' }
 
 [features]
 "passthrough" = []

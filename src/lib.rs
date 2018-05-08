@@ -295,7 +295,10 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
     // ethdriver_buf contains ethernet frame, attempt to parse it
     let eth_frame = match EthernetFrame::new_checked(sel4_ethdriver_rx_transmute(len)) {
         Ok(frame) => frame,
-        Err(_) => return 0,
+        Err(_) => {
+          unsafe {*len = 0;}
+          return 0;
+        },
     };
 
     // Ignore any packets not directed to our hardware address.
@@ -307,6 +310,7 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
         unsafe {
             printf(b"RX: not my address\n\0".as_ptr() as *const i8);
         }
+        unsafe {*len = 0;}
         return 0;
     }
 
@@ -322,6 +326,7 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
                 Ok(_) => { /* pass the packet */ }
                 Err(_) => {
                     /* error occured */
+                    unsafe {*len = 0;}
                     return 0;
                 }
             }
@@ -329,7 +334,8 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
         #[cfg(feature = "proto-ipv6")]
         EthernetProtocol::Ipv6 => {
             // Ipv6 traffic is not allowed
-            return 0;
+          unsafe {*len = 0;}
+          return 0;
         }
         // passthrough the traffic ?
         _ => {
@@ -338,7 +344,10 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
                 printf(b"RX: unknown ethertype\n\0".as_ptr() as *const i8);
             }
             #[cfg(not(feature = "passthrough"))]
-            return 0;
+            {
+              unsafe {*len = 0;}
+              return 0;
+            }
         }
     }
 
