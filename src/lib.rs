@@ -279,7 +279,9 @@ fn client_tx_process_udp<'frame>(ip_repr: IpRepr, ip_payload: &'frame [u8], _len
 
 
 /// copy `len` data from `ethdriver_buf` into `client_buf`
-/// return -1 if some error happened, other values are OK (typically it is 0)
+/// return 0 if data are received, 1 if more data are in the buffer and `client_rx()`
+/// should be called again, -1 if no data are received (either the packet was dropped,
+/// or `clien_rx` was called without any data being available)
 #[no_mangle]
 pub extern "C" fn client_rx(len: *mut i32) -> i32 {
     let result = unsafe { ethdriver_rx(len) };
@@ -297,7 +299,7 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
         Ok(frame) => frame,
         Err(_) => {
           unsafe {*len = 0;}
-          return 0;
+          return -1;
         },
     };
 
@@ -311,7 +313,7 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
             printf(b"RX: not my address\n\0".as_ptr() as *const i8);
         }
         unsafe {*len = 0;}
-        return 0;
+        return -1;
     }
 
     // Check if we have ipv4 traffic
@@ -327,7 +329,7 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
                 Err(_) => {
                     /* error occured */
                     unsafe {*len = 0;}
-                    return 0;
+                    return -1;
                 }
             }
         }
@@ -335,7 +337,7 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
         EthernetProtocol::Ipv6 => {
             // Ipv6 traffic is not allowed
           unsafe {*len = 0;}
-          return 0;
+          return -1;
         }
         // passthrough the traffic ?
         _ => {
@@ -346,7 +348,7 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
             #[cfg(not(feature = "passthrough"))]
             {
               unsafe {*len = 0;}
-              return 0;
+              return -1;
             }
         }
     }
