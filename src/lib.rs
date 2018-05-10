@@ -12,7 +12,7 @@ use libc::memcpy;
 
 extern crate smoltcp;
 use smoltcp::wire::{EthernetAddress, EthernetProtocol, EthernetFrame};
-use smoltcp::wire::{IpProtocol, IpRepr, IpAddress, Ipv4Repr, Ipv4Packet};
+use smoltcp::wire::{IpProtocol, IpAddress, Ipv4Repr, Ipv4Packet};
 use smoltcp::{Error, Result};
 use smoltcp::phy::ChecksumCapabilities;
 use smoltcp::wire::{UdpRepr, UdpPacket};
@@ -27,10 +27,17 @@ const ETHERNET_FRAME_PAYLOAD: usize = 14;
 const BUFFER_SIZE: usize = 64000;
 const UDP_HEADER_SIZE: usize = 8;
 const IPV4_HEADER_SIZE: usize = 20;
+
 static mut TX_UDP_PAYLOAD_BUFFER: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE];
 static mut TX_UDP_PACKET_BUFFER: [u8; BUFFER_SIZE + UDP_HEADER_SIZE] =
     [0; BUFFER_SIZE + UDP_HEADER_SIZE];
 static mut TX_IPV4_PACKET_BUFFER: [u8; BUFFER_SIZE + UDP_HEADER_SIZE + IPV4_HEADER_SIZE] =
+    [0; BUFFER_SIZE + UDP_HEADER_SIZE + IPV4_HEADER_SIZE];
+
+static mut RX_UDP_PAYLOAD_BUFFER: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE];
+static mut RX_UDP_PACKET_BUFFER: [u8; BUFFER_SIZE + UDP_HEADER_SIZE] =
+    [0; BUFFER_SIZE + UDP_HEADER_SIZE];
+static mut RX_IPV4_PACKET_BUFFER: [u8; BUFFER_SIZE + UDP_HEADER_SIZE + IPV4_HEADER_SIZE] =
     [0; BUFFER_SIZE + UDP_HEADER_SIZE + IPV4_HEADER_SIZE];
 
 extern "C" {
@@ -144,7 +151,7 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
     // client_buf contains ethernet frame, attempt to parse it
     let eth_frame = match EthernetFrame::new_checked(sel4_ethdriver_tx_transmute(len)) {
         Ok(frame) => frame,
-        Err(_) => return 0, // silent drop
+        Err(_) => return -1,
     };
 
     // Check if we have ipv4 traffic
@@ -159,14 +166,15 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
                 Ok(result) => {
                     match result {
                         Some(ipv4_packet_len) => {
-                            /* copy data to the ethernetdriver_buf and pass it on */
+                            /* copy ipv4 packet data to the client_buf and pass it on */
                             unsafe {
                                 len = (ETHERNET_FRAME_PAYLOAD + ipv4_packet_len) as i32;
                                 let local_buf_ptr =
                                     std::mem::transmute::<*mut c_void, *mut u8>(client_buf(1));
                                 let slice =
                                     std::slice::from_raw_parts_mut(local_buf_ptr, len as usize);
-                                slice[ETHERNET_FRAME_PAYLOAD..].clone_from_slice(&TX_IPV4_PACKET_BUFFER[0..ipv4_packet_len]);
+                                slice[ETHERNET_FRAME_PAYLOAD..]
+                                    .clone_from_slice(&TX_IPV4_PACKET_BUFFER[0..ipv4_packet_len]);
                             }
                         }
                         None => { /* pass the packet unchanged */ }
@@ -174,24 +182,22 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
                 }
                 Err(_) => {
                     /* error during packet processing occured */
-                    return 0; // silent drop
+                    return -1;
                 }
             }
         }
         #[cfg(feature = "proto-ipv6")]
         EthernetProtocol::Ipv6 => {
             // Ipv6 traffic is not allowed
-            return 0; // silent drop
+            return -1;
         }
-        // passthrough the traffic ?
+        // passthrough the traffic
         _ => {
             #[cfg(feature = "debug-print")]
             unsafe {
                 printf(b"TX: unknown ethertype\n\0".as_ptr() as *const i8);
             }
-            #[cfg(not(feature = "passthrough"))]
-            return 0; // silent drop
-        }
+        },
     }
 
     // copy data to the ehdriver buffer
@@ -213,8 +219,6 @@ fn client_tx_process_ipv4<'frame>(
     let ipv4_packet = Ipv4Packet::new_checked(eth_frame.payload())?;
     let checksum_caps = ChecksumCapabilities::default();
     let ipv4_repr = Ipv4Repr::parse(&ipv4_packet, &checksum_caps)?;
-
-    //let ip_repr = IpRepr::Ipv4(ipv4_repr);
     let ip_payload = ipv4_packet.payload();
 
     match ipv4_repr.protocol {
@@ -339,7 +343,7 @@ fn client_tx_process_udp<'frame>(ip_repr: Ipv4Repr, ip_payload: &'frame [u8]) ->
 pub extern "C" fn client_rx(len: *mut i32) -> i32 {
     let result = unsafe { ethdriver_rx(len) };
     if result == -1 {
-        return result;
+        return -1;
     }
 
     #[cfg(feature = "debug-print")]
@@ -350,7 +354,7 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
     // ethdriver_buf contains ethernet frame, attempt to parse it
     let eth_frame = match EthernetFrame::new_checked(sel4_ethdriver_rx_transmute(len)) {
         Ok(frame) => frame,
-        Err(_) => return 0,
+        Err(_) => return -1,
     };
 
     // Ignore any packets not directed to our hardware address.
@@ -362,7 +366,7 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
         unsafe {
             printf(b"RX: not my address\n\0".as_ptr() as *const i8);
         }
-        return 0;
+        return -1;
     }
 
     // Check if we have ipv4 traffic
@@ -373,35 +377,48 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
             unsafe {
                 printf(b"RX: client_rx_process_ipv4\n\0".as_ptr() as *const i8);
             }
-            match client_rx_process_ipv4(&eth_frame, len) {
-                Ok(_) => { /* pass the packet */ }
+            match client_rx_process_ipv4(&eth_frame) {
+                Ok(result) => {
+                    match result {
+                        Some(ipv4_packet_len) => {
+                            /* copy ipv4 packet data to the ethernetdriver_buf and pass it on */
+                            unsafe {
+                                *len = (ETHERNET_FRAME_PAYLOAD + ipv4_packet_len) as i32;
+                                let local_buf_ptr =
+                                    std::mem::transmute::<*mut c_void, *mut u8>(ethdriver_buf);
+                                let slice =
+                                    std::slice::from_raw_parts_mut(local_buf_ptr, *len as usize);
+                                slice[ETHERNET_FRAME_PAYLOAD..]
+                                    .clone_from_slice(&RX_IPV4_PACKET_BUFFER[0..ipv4_packet_len]);
+                            }
+                        }
+                        None => { /* pass the packet unchanged */ }
+                    }
+                }
                 Err(_) => {
-                    /* error occured */
-                    return 0;
+                    /* error during packet processing occured */
+                    return -1;
                 }
             }
         }
         #[cfg(feature = "proto-ipv6")]
         EthernetProtocol::Ipv6 => {
             // Ipv6 traffic is not allowed
-            return 0;
+            return -1;
         }
-        // passthrough the traffic ?
+        // passthrough the traffic
         _ => {
             #[cfg(feature = "debug-print")]
             unsafe {
-                printf(b"RX: unknown ethertype\n\0".as_ptr() as *const i8);
+                printf(b"TX: unknown ethertype\n\0".as_ptr() as *const i8);
             }
-            #[cfg(not(feature = "passthrough"))]
-            return 0;
-        }
+        },
     }
 
-    if result != -1 {
-        unsafe {
-            memcpy(client_buf(1), ethdriver_buf, *len as usize);
-        }
+    unsafe {
+        memcpy(client_buf(1), ethdriver_buf, *len as usize);
     }
+
     return result;
 }
 
@@ -413,22 +430,39 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
 #[cfg(feature = "external-firewall")]
 fn client_rx_process_ipv4<'frame>(
     eth_frame: &'frame EthernetFrame<&'frame [u8]>,
-    len: *mut i32,
-) -> Result<&'frame EthernetFrame<&'frame [u8]>> {
+) -> Result<Option<usize>> {
     let ipv4_packet = Ipv4Packet::new_checked(eth_frame.payload())?;
     let checksum_caps = ChecksumCapabilities::default();
     let ipv4_repr = Ipv4Repr::parse(&ipv4_packet, &checksum_caps)?;
-
-    let ip_repr = IpRepr::Ipv4(ipv4_repr);
     let ip_payload = ipv4_packet.payload();
 
     match ipv4_repr.protocol {
-        IpProtocol::Icmp => return Ok(eth_frame),
+        IpProtocol::Icmp => return Ok(None),
         IpProtocol::Udp => {
             /* check with external firewall */
-            match client_rx_process_udp(ip_repr, ip_payload, len) {
-                Ok(_) => return Ok(eth_frame),
-                Err(_) => return Err(Error::Illegal),
+            match client_rx_process_udp(ipv4_repr, ip_payload) {
+                Ok(udp_packet_len) => {
+                    let ip_repr = Ipv4Repr {
+                        src_addr: ipv4_repr.src_addr,
+                        dst_addr: ipv4_repr.dst_addr,
+                        protocol: IpProtocol::Udp,
+                        payload_len: udp_packet_len,
+                        hop_limit: 64,
+                    };
+                    let ip_packet = unsafe {
+                        let mut ip_packet = Ipv4Packet::new(
+                            &mut RX_IPV4_PACKET_BUFFER[0..udp_packet_len + ip_repr.buffer_len()],
+                        );
+                        ip_repr.emit(&mut ip_packet, &ChecksumCapabilities::default());
+                        ip_packet
+                            .payload_mut()
+                            .copy_from_slice(&RX_UDP_PACKET_BUFFER[0..udp_packet_len]);
+                        ip_packet.set_ident(ipv4_packet.ident());
+                        ip_packet
+                    };
+                    return Ok(Some(ip_packet.total_len() as usize));
+                }
+                Err(e) => return Err(e),
             }
         }
         _ => {
@@ -442,33 +476,29 @@ fn client_rx_process_ipv4<'frame>(
 /// return OK if UDP packet is well formed && passes external firewall
 /// return Err otherwise
 #[cfg(feature = "external-firewall")]
-fn client_rx_process_udp<'frame>(
-    ip_repr: IpRepr,
-    ip_payload: &'frame [u8],
-    _len: *mut i32,
-) -> Result<()> {
-    let (src_addr, dst_addr) = (ip_repr.src_addr(), ip_repr.dst_addr());
+fn client_rx_process_udp<'frame>(ip_repr: Ipv4Repr, ip_payload: &'frame [u8]) -> Result<usize> {
     let udp_packet = UdpPacket::new_checked(ip_payload)?;
     let checksum_caps = ChecksumCapabilities::default();
-    let _udp_repr = UdpRepr::parse(&udp_packet, &src_addr, &dst_addr, &checksum_caps)?;
+    let _udp_repr = UdpRepr::parse(
+        &udp_packet,
+        &IpAddress::from(ip_repr.src_addr),
+        &IpAddress::from(ip_repr.dst_addr),
+        &checksum_caps,
+    )?; // to force checksum
 
     // get proper addresses
-    let src_addr_bytes = match src_addr {
-        IpAddress::Ipv4(adr) => {
-            let mut bytes = [0, 0, 0, 0];
-            bytes[..].clone_from_slice(adr.as_bytes());
-            unsafe { std::mem::transmute::<[u8; 4], u32>(bytes) }
-        }
-        _ => return Err(Error::Illegal),
+    let src_addr_bytes = {
+        let mut bytes = [0, 0, 0, 0];
+        bytes[..].clone_from_slice(ip_repr.src_addr.as_bytes());
+        let bytes = unsafe { std::mem::transmute::<[u8; 4], u32>(bytes) };
+        bytes
     };
 
-    let dst_addr_bytes = match dst_addr {
-        IpAddress::Ipv4(adr) => {
-            let mut bytes = [0, 0, 0, 0];
-            bytes[..].clone_from_slice(adr.as_bytes());
-            unsafe { std::mem::transmute::<[u8; 4], u32>(bytes) }
-        }
-        _ => return Err(Error::Illegal),
+    let dst_addr_bytes = {
+        let mut bytes = [0, 0, 0, 0];
+        bytes[..].clone_from_slice(ip_repr.dst_addr.as_bytes());
+        let bytes = unsafe { std::mem::transmute::<[u8; 4], u32>(bytes) };
+        bytes
     };
 
     // call external firewall
@@ -476,20 +506,46 @@ fn client_rx_process_udp<'frame>(
     unsafe {
         printf(b"RX: Calling external firewall\n\0".as_ptr() as *const i8);
     }
-    let ret_len = unsafe {
+
+    // copy data to the buffer
+    unsafe {
+        RX_UDP_PAYLOAD_BUFFER[0..udp_packet.payload().len()].copy_from_slice(udp_packet.payload());
+    }
+
+    // call external firewall
+    let payload_len = unsafe {
         packet_in(
             src_addr_bytes,
             udp_packet.src_port(),
             dst_addr_bytes,
             udp_packet.dst_port(),
-            udp_packet.len() as u16,
-            udp_packet.payload().as_ptr(),
+            udp_packet.payload().len() as u16,
+            RX_UDP_PAYLOAD_BUFFER.as_mut_ptr(),
             BUFFER_SIZE as u16,
         )
     };
 
-    if ret_len > 0 {
-        Ok(())
+    // if non-zero return, parse payload and return it
+    if payload_len > 0 {
+        unsafe {
+            let udp_data = &RX_UDP_PAYLOAD_BUFFER[0..payload_len as usize];
+            let udp_repr = UdpRepr {
+                src_port: udp_packet.src_port(),
+                dst_port: udp_packet.dst_port(),
+                payload: &udp_data,
+            };
+
+            let mut udp_packet =
+                UdpPacket::new(&mut RX_UDP_PACKET_BUFFER[0..udp_repr.buffer_len()]);
+            udp_repr.emit(
+                &mut udp_packet,
+                &IpAddress::from(ip_repr.src_addr),
+                &IpAddress::from(ip_repr.dst_addr),
+                &ChecksumCapabilities::default(),
+            );
+
+            Ok(udp_repr.buffer_len())
+        }
     } else {
         Err(Error::Dropped)
     }
