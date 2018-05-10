@@ -216,6 +216,8 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
 fn client_tx_process_ipv4<'frame>(
     eth_frame: &'frame EthernetFrame<&'frame [u8]>,
 ) -> Result<Option<usize>> {
+    // TODO: fragmentation will be handled here
+    // check ipv4 fragments
     let ipv4_packet = Ipv4Packet::new_checked(eth_frame.payload())?;
     let checksum_caps = ChecksumCapabilities::default();
     let ipv4_repr = Ipv4Repr::parse(&ipv4_packet, &checksum_caps)?;
