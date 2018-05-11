@@ -5,7 +5,7 @@
 //
 #![feature(libc)]
 #![feature(lang_items)]
-#![no_std]
+//#![no_std]
 
 extern crate libc;
 use libc::c_void;
@@ -17,7 +17,12 @@ use smoltcp::wire::{IpProtocol, IpAddress, Ipv4Repr, Ipv4Packet};
 use smoltcp::{Error, Result};
 use smoltcp::phy::ChecksumCapabilities;
 use smoltcp::wire::{UdpRepr, UdpPacket};
+use smoltcp::time::Instant;
+use smoltcp::iface::{FragmentSet, FragmentedPacket};
 
+use std::cell::UnsafeCell;
+
+/*
 #[lang = "eh_personality"]
 #[no_mangle]
 pub extern "C" fn eh_personality() {
@@ -32,6 +37,7 @@ pub extern "C" fn rust_begin_unwind(
 ) -> ! {
     unimplemented!();
 }
+*/
 
 #[allow(dead_code)]
 #[no_mangle]
@@ -43,6 +49,7 @@ const ETHERNET_FRAME_PAYLOAD: usize = 14;
 const BUFFER_SIZE: usize = 64000;
 const UDP_HEADER_SIZE: usize = 8;
 const IPV4_HEADER_SIZE: usize = 20;
+const SUPPORTED_FRAGMENTS: usize = 1;
 
 static mut TX_UDP_PAYLOAD_BUFFER: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE];
 static mut TX_UDP_PACKET_BUFFER: [u8; BUFFER_SIZE + UDP_HEADER_SIZE] =
@@ -186,9 +193,9 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
                             unsafe {
                                 len = (ETHERNET_FRAME_PAYLOAD + ipv4_packet_len) as i32;
                                 let local_buf_ptr =
-                                    core::mem::transmute::<*mut c_void, *mut u8>(client_buf(1));
+                                    std::mem::transmute::<*mut c_void, *mut u8>(client_buf(1));
                                 let slice =
-                                    core::slice::from_raw_parts_mut(local_buf_ptr, len as usize);
+                                    std::slice::from_raw_parts_mut(local_buf_ptr, len as usize);
                                 slice[ETHERNET_FRAME_PAYLOAD..]
                                     .clone_from_slice(&TX_IPV4_PACKET_BUFFER[0..ipv4_packet_len]);
                             }
@@ -208,12 +215,7 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
             return -1;
         }
         // passthrough the traffic
-        _ => {
-            #[cfg(feature = "debug-print")]
-            unsafe {
-                printf(b"TX: unknown ethertype\n\0".as_ptr() as *const i8);
-            }
-        },
+        _ => { /* do nothing */ }
     }
 
     // copy data to the ehdriver buffer
@@ -232,8 +234,6 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
 fn client_tx_process_ipv4<'frame>(
     eth_frame: &'frame EthernetFrame<&'frame [u8]>,
 ) -> Result<Option<usize>> {
-    // TODO: fragmentation will be handled here
-    // check ipv4 fragments
     let ipv4_packet = Ipv4Packet::new_checked(eth_frame.payload())?;
     let checksum_caps = ChecksumCapabilities::default();
     let ipv4_repr = Ipv4Repr::parse(&ipv4_packet, &checksum_caps)?;
@@ -295,14 +295,14 @@ fn client_tx_process_udp<'frame>(ip_repr: Ipv4Repr, ip_payload: &'frame [u8]) ->
     let src_addr_bytes = {
         let mut bytes = [0, 0, 0, 0];
         bytes[..].clone_from_slice(ip_repr.src_addr.as_bytes());
-        let bytes = unsafe { core::mem::transmute::<[u8; 4], u32>(bytes) };
+        let bytes = unsafe { std::mem::transmute::<[u8; 4], u32>(bytes) };
         bytes
     };
 
     let dst_addr_bytes = {
         let mut bytes = [0, 0, 0, 0];
         bytes[..].clone_from_slice(ip_repr.dst_addr.as_bytes());
-        let bytes = unsafe { core::mem::transmute::<[u8; 4], u32>(bytes) };
+        let bytes = unsafe { std::mem::transmute::<[u8; 4], u32>(bytes) };
         bytes
     };
 
@@ -348,13 +348,48 @@ fn client_tx_process_udp<'frame>(ip_repr: Ipv4Repr, ip_payload: &'frame [u8]) ->
                 &IpAddress::from(ip_repr.dst_addr),
                 &ChecksumCapabilities::default(),
             );
-            udp_packet.fill_checksum(&IpAddress::from(ip_repr.src_addr),&IpAddress::from(ip_repr.dst_addr));
+            udp_packet.fill_checksum(
+                &IpAddress::from(ip_repr.src_addr),
+                &IpAddress::from(ip_repr.dst_addr),
+            );
 
             Ok(udp_repr.buffer_len())
         }
     } else {
         Err(Error::Dropped)
     }
+}
+
+
+unsafe fn client_rx_get_fragments_set() -> &'static Option<UnsafeCell<FragmentSet<'static>>> {
+    static mut FRAGMENTS: Option<UnsafeCell<FragmentSet>> = None;
+    static mut INIT: bool = false;
+
+
+    if !INIT {
+        /*
+        //let v: [&mut FragmentedPacket<'static>;SUPPORTED_FRAGMENTS] = [0;SUPPORTED_FRAGMENTS];
+        //let mut fragments = FragmentSet::new(v);
+        static mut FRAGMENT1_DATA: [u8; 65535] = [0; 65535];
+        let mut fragment1 = FragmentedPacket::new(&mut FRAGMENT1_DATA[..]);
+        static mut FRAGMENT2_DATA: [u8; 65535] = [0; 65535];
+        let mut fragment2 = FragmentedPacket::new(&mut FRAGMENT2_DATA[..]);
+        
+        let v: [_;2] = [&mut fragment1,&mut fragment2];
+        let fragments = FragmentSet::new(&v);
+        //fragments.add(fragment1);
+
+*/
+        let mut fragments = FragmentSet::new(vec![]);
+        let fragment = FragmentedPacket::new(vec![0; 65535]);
+        fragments.add(fragment);    
+        let val = UnsafeCell::new(fragments);
+        FRAGMENTS = Some(val);
+
+        INIT = true;
+    }
+
+    &FRAGMENTS
 }
 
 /// copy `len` data from `ethdriver_buf` into `client_buf`
@@ -397,7 +432,13 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
             unsafe {
                 printf(b"RX: client_rx_process_ipv4\n\0".as_ptr() as *const i8);
             }
-            match client_rx_process_ipv4(&eth_frame) {
+            let mut fragments = unsafe {
+                match client_rx_get_fragments_set() {
+                    None => None,
+                    Some(cell) => Some(&mut*cell.get()),
+                }
+            };
+            match client_rx_process_ipv4(&eth_frame, &mut fragments) {
                 Ok(result) => {
                     match result {
                         Some(ipv4_packet_len) => {
@@ -405,9 +446,9 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
                             unsafe {
                                 *len = (ETHERNET_FRAME_PAYLOAD + ipv4_packet_len) as i32;
                                 let local_buf_ptr =
-                                    core::mem::transmute::<*mut c_void, *mut u8>(ethdriver_buf);
+                                    std::mem::transmute::<*mut c_void, *mut u8>(ethdriver_buf);
                                 let slice =
-                                    core::slice::from_raw_parts_mut(local_buf_ptr, *len as usize);
+                                    std::slice::from_raw_parts_mut(local_buf_ptr, *len as usize);
                                 slice[ETHERNET_FRAME_PAYLOAD..]
                                     .clone_from_slice(&RX_IPV4_PACKET_BUFFER[0..ipv4_packet_len]);
                             }
@@ -427,12 +468,7 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
             return -1;
         }
         // passthrough the traffic
-        _ => {
-            #[cfg(feature = "debug-print")]
-            unsafe {
-                printf(b"TX: unknown ethertype\n\0".as_ptr() as *const i8);
-            }
-        },
+        _ => { /* do nothing */ }
     }
 
     unsafe {
@@ -440,6 +476,81 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
     }
 
     return result;
+}
+
+/// Process an IPv4 fragment
+/// Returns etiher an assembled packet, or nothing (if no packet is available),
+/// or an error caused by processing a packet.
+fn client_rx_process_ipv4_fragment<'frame, 'r>(
+    ipv4_packet: Ipv4Packet<&'frame [u8]>,
+    timestamp: Instant,
+    fragments: &'r mut Option<&'r mut FragmentSet<'static>>,
+) -> Result<Option<Ipv4Packet<&'r [u8]>>> {
+    match fragments {
+        Some(ref mut fragments) => {
+            // get an existing fragment or attempt to get a new one
+            let fragment = match fragments.get_packet(
+                ipv4_packet.ident(),
+                ipv4_packet.src_addr(),
+                ipv4_packet.dst_addr(),
+                timestamp,
+            ) {
+                Some(frag) => frag,
+                None => return Err(Error::FragmentSetFull),
+            };
+
+            if fragment.is_empty() {
+                // this is a new packet
+                fragment.start(
+                    ipv4_packet.ident(),
+                    ipv4_packet.src_addr(),
+                    ipv4_packet.dst_addr(),
+                );
+            }
+
+            if !ipv4_packet.more_frags() {
+                // last fragment, remember data length
+                fragment.set_total_len(
+                    ipv4_packet.frag_offset() as usize + ipv4_packet.total_len() as usize,
+                );
+            }
+
+            match fragment.add(
+                ipv4_packet.header_len() as usize,
+                ipv4_packet.frag_offset() as usize,
+                ipv4_packet.payload().len(),
+                ipv4_packet.into_inner(),
+                timestamp,
+            ) {
+                Ok(_) => {}
+                Err(_) => {
+                    fragment.reset();
+                    return Err(Error::TooManyFragments);
+                }
+            }
+
+            if fragment.check_contig_range() {
+                // this is the last packet, attempt reassembly
+                let front = fragment.front().unwrap();
+                {
+                    // because the different mutability of the underlying buffers, we have to do this exercise
+                    let mut ipv4_packet =
+                        Ipv4Packet::new_checked(fragment.get_buffer_mut(0, front))?;
+                    ipv4_packet.set_total_len(front as u16);
+                    ipv4_packet.fill_checksum();
+                }
+                return Ok(Some(Ipv4Packet::new_checked(
+                    fragment.get_buffer(0, front),
+                )?));
+            }
+
+            // not the last fragment
+            return Ok(None);
+        }
+        None => {
+            return Err(Error::NoFragmentSet);
+        }
+    }
 }
 
 /// Process ipv4 packet (only when external firewall is allowed)
@@ -450,8 +561,28 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
 #[cfg(feature = "external-firewall")]
 fn client_rx_process_ipv4<'frame>(
     eth_frame: &'frame EthernetFrame<&'frame [u8]>,
+    fragments: &'frame mut Option<&'frame mut FragmentSet<'static>>,
 ) -> Result<Option<usize>> {
-    let ipv4_packet = Ipv4Packet::new_checked(eth_frame.payload())?;
+    let ipv4_packet_in = Ipv4Packet::new_checked(eth_frame.payload())?;
+
+    let ipv4_packet;
+    if ipv4_packet_in.more_frags() || ipv4_packet_in.frag_offset() > 0 {
+        static mut MS: i64 = 0;
+        unsafe {
+            MS += 1; // helper for managing too-old fragments
+        }
+        let timestamp = unsafe { Instant::from_millis(MS) };
+        match client_rx_process_ipv4_fragment(ipv4_packet_in, timestamp, fragments)? {
+            Some(assembled_packet) => {
+                ipv4_packet = assembled_packet;
+            }
+            None => return Err(Error::Fragmented),
+        }
+    } else {
+        // non-fragmented packet
+        ipv4_packet = ipv4_packet_in;
+    }
+
     let checksum_caps = ChecksumCapabilities::default();
     let ipv4_repr = Ipv4Repr::parse(&ipv4_packet, &checksum_caps)?;
     let ip_payload = ipv4_packet.payload();
@@ -511,14 +642,14 @@ fn client_rx_process_udp<'frame>(ip_repr: Ipv4Repr, ip_payload: &'frame [u8]) ->
     let src_addr_bytes = {
         let mut bytes = [0, 0, 0, 0];
         bytes[..].clone_from_slice(ip_repr.src_addr.as_bytes());
-        let bytes = unsafe { core::mem::transmute::<[u8; 4], u32>(bytes) };
+        let bytes = unsafe { std::mem::transmute::<[u8; 4], u32>(bytes) };
         bytes
     };
 
     let dst_addr_bytes = {
         let mut bytes = [0, 0, 0, 0];
         bytes[..].clone_from_slice(ip_repr.dst_addr.as_bytes());
-        let bytes = unsafe { core::mem::transmute::<[u8; 4], u32>(bytes) };
+        let bytes = unsafe { std::mem::transmute::<[u8; 4], u32>(bytes) };
         bytes
     };
 
@@ -564,7 +695,10 @@ fn client_rx_process_udp<'frame>(ip_repr: Ipv4Repr, ip_payload: &'frame [u8]) ->
                 &IpAddress::from(ip_repr.dst_addr),
                 &ChecksumCapabilities::default(),
             );
-            udp_packet.fill_checksum(&IpAddress::from(ip_repr.src_addr),&IpAddress::from(ip_repr.dst_addr));
+            udp_packet.fill_checksum(
+                &IpAddress::from(ip_repr.src_addr),
+                &IpAddress::from(ip_repr.dst_addr),
+            );
 
             Ok(udp_repr.buffer_len())
         }
@@ -589,8 +723,8 @@ fn sel4_ethdriver_rx_transmute<'a>(len: *mut i32) -> &'a [u8] {
     unsafe {
         assert!(!ethdriver_buf.is_null());
         // create a slice of length `len` from the buffer
-        let local_buf_ptr = core::mem::transmute::<*mut c_void, *mut u8>(ethdriver_buf);
-        let slice = core::slice::from_raw_parts(local_buf_ptr, *len as usize);
+        let local_buf_ptr = std::mem::transmute::<*mut c_void, *mut u8>(ethdriver_buf);
+        let slice = std::slice::from_raw_parts(local_buf_ptr, *len as usize);
         slice
     }
 }
@@ -602,8 +736,8 @@ fn sel4_ethdriver_tx_transmute<'a>(len: i32) -> &'a [u8] {
     unsafe {
         assert!(!client_buf(1).is_null());
         // create a slice of length `len` from the buffer
-        let local_buf_ptr = core::mem::transmute::<*mut c_void, *mut u8>(client_buf(1));
-        let slice = core::slice::from_raw_parts(local_buf_ptr, len as usize);
+        let local_buf_ptr = std::mem::transmute::<*mut c_void, *mut u8>(client_buf(1));
+        let slice = std::slice::from_raw_parts(local_buf_ptr, len as usize);
         slice
     }
 }
