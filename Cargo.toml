@@ -17,7 +17,6 @@ path = "../../../../../projects/smoltcp"
 "libc:0.2.40" = { git = 'https://github.com/GaloisInc/rs_liblibc.git' }
 
 [features]
-"passthrough" = []
 "external-firewall" = []
 "debug-print" = []
-default = ["passthrough","external-firewall"]
+default = ["external-firewall"]
