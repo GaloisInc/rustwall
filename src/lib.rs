@@ -5,6 +5,7 @@
 //
 #![feature(libc)]
 #![feature(lang_items)]
+#![no_std]
 
 extern crate libc;
 use libc::c_void;
@@ -16,6 +17,21 @@ use smoltcp::wire::{IpProtocol, IpAddress, Ipv4Repr, Ipv4Packet};
 use smoltcp::{Error, Result};
 use smoltcp::phy::ChecksumCapabilities;
 use smoltcp::wire::{UdpRepr, UdpPacket};
+
+#[lang = "eh_personality"]
+#[no_mangle]
+pub extern "C" fn eh_personality() {
+    unimplemented!();
+}
+
+#[lang = "panic_fmt"]
+#[no_mangle]
+pub extern "C" fn rust_begin_unwind(
+    _fmt: &core::fmt::Arguments,
+    _file_line: &(&'static str, usize),
+) -> ! {
+    unimplemented!();
+}
 
 #[allow(dead_code)]
 #[no_mangle]
@@ -170,9 +186,9 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
                             unsafe {
                                 len = (ETHERNET_FRAME_PAYLOAD + ipv4_packet_len) as i32;
                                 let local_buf_ptr =
-                                    std::mem::transmute::<*mut c_void, *mut u8>(client_buf(1));
+                                    core::mem::transmute::<*mut c_void, *mut u8>(client_buf(1));
                                 let slice =
-                                    std::slice::from_raw_parts_mut(local_buf_ptr, len as usize);
+                                    core::slice::from_raw_parts_mut(local_buf_ptr, len as usize);
                                 slice[ETHERNET_FRAME_PAYLOAD..]
                                     .clone_from_slice(&TX_IPV4_PACKET_BUFFER[0..ipv4_packet_len]);
                             }
@@ -245,6 +261,7 @@ fn client_tx_process_ipv4<'frame>(
                             .payload_mut()
                             .copy_from_slice(&TX_UDP_PACKET_BUFFER[0..udp_packet_len]);
                         ip_packet.set_ident(ipv4_packet.ident());
+                        ip_packet.fill_checksum();
                         ip_packet
                     };
                     return Ok(Some(ip_packet.total_len() as usize));
@@ -278,14 +295,14 @@ fn client_tx_process_udp<'frame>(ip_repr: Ipv4Repr, ip_payload: &'frame [u8]) ->
     let src_addr_bytes = {
         let mut bytes = [0, 0, 0, 0];
         bytes[..].clone_from_slice(ip_repr.src_addr.as_bytes());
-        let bytes = unsafe { std::mem::transmute::<[u8; 4], u32>(bytes) };
+        let bytes = unsafe { core::mem::transmute::<[u8; 4], u32>(bytes) };
         bytes
     };
 
     let dst_addr_bytes = {
         let mut bytes = [0, 0, 0, 0];
         bytes[..].clone_from_slice(ip_repr.dst_addr.as_bytes());
-        let bytes = unsafe { std::mem::transmute::<[u8; 4], u32>(bytes) };
+        let bytes = unsafe { core::mem::transmute::<[u8; 4], u32>(bytes) };
         bytes
     };
 
@@ -331,6 +348,7 @@ fn client_tx_process_udp<'frame>(ip_repr: Ipv4Repr, ip_payload: &'frame [u8]) ->
                 &IpAddress::from(ip_repr.dst_addr),
                 &ChecksumCapabilities::default(),
             );
+            udp_packet.fill_checksum(&IpAddress::from(ip_repr.src_addr),&IpAddress::from(ip_repr.dst_addr));
 
             Ok(udp_repr.buffer_len())
         }
@@ -387,9 +405,9 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
                             unsafe {
                                 *len = (ETHERNET_FRAME_PAYLOAD + ipv4_packet_len) as i32;
                                 let local_buf_ptr =
-                                    std::mem::transmute::<*mut c_void, *mut u8>(ethdriver_buf);
+                                    core::mem::transmute::<*mut c_void, *mut u8>(ethdriver_buf);
                                 let slice =
-                                    std::slice::from_raw_parts_mut(local_buf_ptr, *len as usize);
+                                    core::slice::from_raw_parts_mut(local_buf_ptr, *len as usize);
                                 slice[ETHERNET_FRAME_PAYLOAD..]
                                     .clone_from_slice(&RX_IPV4_PACKET_BUFFER[0..ipv4_packet_len]);
                             }
@@ -460,6 +478,7 @@ fn client_rx_process_ipv4<'frame>(
                             .payload_mut()
                             .copy_from_slice(&RX_UDP_PACKET_BUFFER[0..udp_packet_len]);
                         ip_packet.set_ident(ipv4_packet.ident());
+                        ip_packet.fill_checksum();
                         ip_packet
                     };
                     return Ok(Some(ip_packet.total_len() as usize));
@@ -492,14 +511,14 @@ fn client_rx_process_udp<'frame>(ip_repr: Ipv4Repr, ip_payload: &'frame [u8]) ->
     let src_addr_bytes = {
         let mut bytes = [0, 0, 0, 0];
         bytes[..].clone_from_slice(ip_repr.src_addr.as_bytes());
-        let bytes = unsafe { std::mem::transmute::<[u8; 4], u32>(bytes) };
+        let bytes = unsafe { core::mem::transmute::<[u8; 4], u32>(bytes) };
         bytes
     };
 
     let dst_addr_bytes = {
         let mut bytes = [0, 0, 0, 0];
         bytes[..].clone_from_slice(ip_repr.dst_addr.as_bytes());
-        let bytes = unsafe { std::mem::transmute::<[u8; 4], u32>(bytes) };
+        let bytes = unsafe { core::mem::transmute::<[u8; 4], u32>(bytes) };
         bytes
     };
 
@@ -545,6 +564,7 @@ fn client_rx_process_udp<'frame>(ip_repr: Ipv4Repr, ip_payload: &'frame [u8]) ->
                 &IpAddress::from(ip_repr.dst_addr),
                 &ChecksumCapabilities::default(),
             );
+            udp_packet.fill_checksum(&IpAddress::from(ip_repr.src_addr),&IpAddress::from(ip_repr.dst_addr));
 
             Ok(udp_repr.buffer_len())
         }
@@ -569,8 +589,8 @@ fn sel4_ethdriver_rx_transmute<'a>(len: *mut i32) -> &'a [u8] {
     unsafe {
         assert!(!ethdriver_buf.is_null());
         // create a slice of length `len` from the buffer
-        let local_buf_ptr = std::mem::transmute::<*mut c_void, *mut u8>(ethdriver_buf);
-        let slice = std::slice::from_raw_parts(local_buf_ptr, *len as usize);
+        let local_buf_ptr = core::mem::transmute::<*mut c_void, *mut u8>(ethdriver_buf);
+        let slice = core::slice::from_raw_parts(local_buf_ptr, *len as usize);
         slice
     }
 }
@@ -582,19 +602,8 @@ fn sel4_ethdriver_tx_transmute<'a>(len: i32) -> &'a [u8] {
     unsafe {
         assert!(!client_buf(1).is_null());
         // create a slice of length `len` from the buffer
-        let local_buf_ptr = std::mem::transmute::<*mut c_void, *mut u8>(client_buf(1));
-        let slice = std::slice::from_raw_parts(local_buf_ptr, len as usize);
+        let local_buf_ptr = core::mem::transmute::<*mut c_void, *mut u8>(client_buf(1));
+        let slice = core::slice::from_raw_parts(local_buf_ptr, len as usize);
         slice
     }
 }
-/*
-fn sel4_ethdriver_tx_transmute_mut<'a>(len: i32) -> &'a mut [u8] {
-    unsafe {
-        assert!(!client_buf(1).is_null());
-        // create a slice of length `len` from the buffer
-        let local_buf_ptr = std::mem::transmute::<*mut c_void, *mut u8>(client_buf(1));
-        let slice = std::slice::from_raw_parts_mut(local_buf_ptr, len as usize);
-        slice
-    }
-}
-*/
