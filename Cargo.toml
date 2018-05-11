@@ -18,5 +18,4 @@ path = "../../../../../projects/smoltcp"
 
 [features]
 "external-firewall" = []
-"debug-print" = []
 default = ["external-firewall"]
