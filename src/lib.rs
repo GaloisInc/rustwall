@@ -5,7 +5,6 @@
 //
 #![feature(libc)]
 #![feature(lang_items)]
-//#![no_std]
 
 extern crate libc;
 use libc::c_void;
@@ -22,23 +21,6 @@ use smoltcp::iface::{FragmentSet, FragmentedPacket};
 
 use std::cell::UnsafeCell;
 
-/*
-#[lang = "eh_personality"]
-#[no_mangle]
-pub extern "C" fn eh_personality() {
-    unimplemented!();
-}
-
-#[lang = "panic_fmt"]
-#[no_mangle]
-pub extern "C" fn rust_begin_unwind(
-    _fmt: &core::fmt::Arguments,
-    _file_line: &(&'static str, usize),
-) -> ! {
-    unimplemented!();
-}
-*/
-
 #[allow(dead_code)]
 #[no_mangle]
 extern "C" {
@@ -49,7 +31,7 @@ const ETHERNET_FRAME_PAYLOAD: usize = 14;
 const BUFFER_SIZE: usize = 64000;
 const UDP_HEADER_SIZE: usize = 8;
 const IPV4_HEADER_SIZE: usize = 20;
-const SUPPORTED_FRAGMENTS: usize = 1;
+const SUPPORTED_FRAGMENTS: usize = 6;
 
 static mut TX_UDP_PAYLOAD_BUFFER: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE];
 static mut TX_UDP_PACKET_BUFFER: [u8; BUFFER_SIZE + UDP_HEADER_SIZE] =
@@ -91,7 +73,6 @@ extern "C" {
     /// Output: length of the UDP payload to be received from `src_addr:src_port` at `dst_addr:dst_port`
     ///		    Note that if the UDP payload is approved and was unchanged, simply return `payload_len`
     ///         Return 0 if the payload is rejected.
-    #[cfg(feature = "external-firewall")]
     fn packet_in(
         src_addr: u32,
         src_port: u16,
@@ -120,7 +101,6 @@ extern "C" {
     /// Output: length of the UDP payload to be received from `src_addr:src_port` at `dst_addr:dst_port`
     ///		    Note that if the UDP payload is approved and was unchanged, simply return `payload_len`
     ///         Return 0 if the payload is rejected.
-    #[cfg(feature = "external-firewall")]
     fn packet_out(
         src_addr: u32,
         src_port: u16,
@@ -179,7 +159,6 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
 
     // Check if we have ipv4 traffic
     match eth_frame.ethertype() {
-        #[cfg(feature = "external-firewall")]
         EthernetProtocol::Ipv4 => {
             #[cfg(feature = "debug-print")]
             unsafe {
@@ -230,7 +209,6 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
 /// - Ipv4 packet is well formed && of ICMP protocol (passthrough)
 /// - Ipv4 packet is well formed && of UDP protocol && passes external firewall (external firewall)
 /// otherwise returns error
-#[cfg(feature = "external-firewall")]
 fn client_tx_process_ipv4<'frame>(
     eth_frame: &'frame EthernetFrame<&'frame [u8]>,
 ) -> Result<Option<usize>> {
@@ -280,7 +258,6 @@ fn client_tx_process_ipv4<'frame>(
 /// return OK if UDP packet is well formed && passes external firewall
 /// Ok returns the udp packet length
 /// return Err otherwise
-#[cfg(feature = "external-firewall")]
 fn client_tx_process_udp<'frame>(ip_repr: Ipv4Repr, ip_payload: &'frame [u8]) -> Result<usize> {
     let udp_packet = UdpPacket::new_checked(ip_payload)?;
     let checksum_caps = ChecksumCapabilities::default();
@@ -306,7 +283,6 @@ fn client_tx_process_udp<'frame>(ip_repr: Ipv4Repr, ip_payload: &'frame [u8]) ->
         bytes
     };
 
-    // call external firewall
     #[cfg(feature = "debug-print")]
     unsafe {
         printf(b"TX: Calling external firewall\n\0".as_ptr() as *const i8);
@@ -360,29 +336,20 @@ fn client_tx_process_udp<'frame>(ip_repr: Ipv4Repr, ip_payload: &'frame [u8]) ->
     }
 }
 
-
+/// The only way how to store fragments in the heap without
+/// using any synchronization primitives
 unsafe fn client_rx_get_fragments_set() -> &'static Option<UnsafeCell<FragmentSet<'static>>> {
     static mut FRAGMENTS: Option<UnsafeCell<FragmentSet>> = None;
     static mut INIT: bool = false;
 
-
     if !INIT {
-        /*
-        //let v: [&mut FragmentedPacket<'static>;SUPPORTED_FRAGMENTS] = [0;SUPPORTED_FRAGMENTS];
-        //let mut fragments = FragmentSet::new(v);
-        static mut FRAGMENT1_DATA: [u8; 65535] = [0; 65535];
-        let mut fragment1 = FragmentedPacket::new(&mut FRAGMENT1_DATA[..]);
-        static mut FRAGMENT2_DATA: [u8; 65535] = [0; 65535];
-        let mut fragment2 = FragmentedPacket::new(&mut FRAGMENT2_DATA[..]);
-        
-        let v: [_;2] = [&mut fragment1,&mut fragment2];
-        let fragments = FragmentSet::new(&v);
-        //fragments.add(fragment1);
-
-*/
         let mut fragments = FragmentSet::new(vec![]);
-        let fragment = FragmentedPacket::new(vec![0; 65535]);
-        fragments.add(fragment);    
+        
+        for _ in 0..SUPPORTED_FRAGMENTS {
+            let fragment = FragmentedPacket::new(vec![0; 65535]);
+            fragments.add(fragment);    
+        }
+
         let val = UnsafeCell::new(fragments);
         FRAGMENTS = Some(val);
 
@@ -426,7 +393,6 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
 
     // Check if we have ipv4 traffic
     match eth_frame.ethertype() {
-        #[cfg(feature = "external-firewall")]
         EthernetProtocol::Ipv4 => {
             #[cfg(feature = "debug-print")]
             unsafe {
@@ -558,7 +524,6 @@ fn client_rx_process_ipv4_fragment<'frame, 'r>(
 /// - Ipv4 packet is well formed && of ICMP protocol (passthrough)
 /// - Ipv4 packet is well formed && of UDP protocol && passes external firewall (external firewall)
 /// otherwise returns error
-#[cfg(feature = "external-firewall")]
 fn client_rx_process_ipv4<'frame>(
     eth_frame: &'frame EthernetFrame<&'frame [u8]>,
     fragments: &'frame mut Option<&'frame mut FragmentSet<'static>>,
@@ -627,7 +592,6 @@ fn client_rx_process_ipv4<'frame>(
 /// Process UDP payload
 /// return OK if UDP packet is well formed && passes external firewall
 /// return Err otherwise
-#[cfg(feature = "external-firewall")]
 fn client_rx_process_udp<'frame>(ip_repr: Ipv4Repr, ip_payload: &'frame [u8]) -> Result<usize> {
     let udp_packet = UdpPacket::new_checked(ip_payload)?;
     let checksum_caps = ChecksumCapabilities::default();
