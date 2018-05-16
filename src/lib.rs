@@ -188,7 +188,6 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
                 }
             }
         }
-        #[cfg(feature = "proto-ipv6")]
         EthernetProtocol::Ipv6 => {
             // Ipv6 traffic is not allowed
             return -1;
@@ -435,7 +434,6 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
                 }
             }
         }
-        #[cfg(feature = "proto-ipv6")]
         EthernetProtocol::Ipv6 => {
             // Ipv6 traffic is not allowed
           unsafe {*len = 0;}
