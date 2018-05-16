@@ -217,7 +217,8 @@ fn client_tx_process_ipv4<'frame>(
     let ip_payload = ipv4_packet.payload();
 
     match ipv4_repr.protocol {
-        IpProtocol::Icmp => return Ok(None),
+        IpProtocol::Icmp => return Ok(None), // passthrough
+        IpProtocol::Igmp => return Ok(None), // passthrough
         IpProtocol::Udp => {
             /* check with external firewall */
             match client_tx_process_udp(ipv4_repr, ip_payload) {
@@ -243,11 +244,11 @@ fn client_tx_process_ipv4<'frame>(
                     };
                     return Ok(Some(ip_packet.total_len() as usize));
                 }
-                Err(e) => return Err(e),
+                Err(e) => return Err(e), // drop packet
             }
         }
         _ => {
-            /* unknown protocol */
+            /* unknown protocol, drop packet */
             return Err(Error::Unrecognized);
         }
     }
@@ -559,7 +560,8 @@ fn client_rx_process_ipv4<'frame>(
     let ip_payload = ipv4_packet.payload();
 
     match ipv4_repr.protocol {
-        IpProtocol::Icmp => return Ok(None),
+        IpProtocol::Icmp => return Ok(None), // passthrough
+        IpProtocol::Igmp => return Ok(None), // passthrough
         IpProtocol::Udp => {
             /* check with external firewall */
             match client_rx_process_udp(ipv4_repr, ip_payload) {

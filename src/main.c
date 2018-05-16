@@ -76,16 +76,6 @@ fd_set set;
 struct timeval timeout;
 int rv;
 
-/*
- // Stubs for the external firewall calls
- void packet_in(uint32_t src_addr, uint16_t src_port,
- uint32_t dest_addr, uint16_t dest_port,
- uint16_t payload_len, void *payload);
-
- void packet_out(uint32_t src_addr, uint16_t src_port,
- uint32_t dest_addr, uint16_t dest_port,
- uint16_t payload_len, void *payload);
- */
 
 /**
  * A helper define to make this look more like an actual seL4 file
@@ -106,7 +96,6 @@ struct
   char content[4096];
 } from_ethdriver_data;
 
-//volatile void * ethdriver_buf = (volatile void *) &from_ethdriver_data;
 void * ethdriver_buf = (void *) &from_ethdriver_data;
 
 struct
@@ -114,7 +103,6 @@ struct
   char content[4096];
 } to_client_1_data;
 
-//volatile void * client_buf_1 = (volatile void *) &to_client_1_data;
 void * client_buf_1 = (void *) &to_client_1_data;
 
 void *client_buf(seL4_Word client_id)
@@ -134,11 +122,6 @@ void client_emit_1(void)
 
 void client_emit(unsigned int badge)
 {
-  // here is normally a array of functions:
-  //static void (*lookup[])(void) {
-  //  [1] = client_emit_1,
-  //};
-  //lookup[badge]();
   if (badge == 1) {
     client_emit_1();
   };
@@ -154,15 +137,15 @@ void client_emit(unsigned int badge)
  */
 int ethdriver_tx(int len)
 {
-  printf("C Attempt to write %i bytes\n", len);
+  //printf("C Attempt to write %i bytes\n", len);
   memcpy(tun_buffer, ethdriver_buf, len);
   len = write(tun_fd, tun_buffer, len);
   if (len < 0) {
-    perror("C Writing to interface");
+    //perror("C Writing to interface");
     close(tun_fd);
     exit(1);
   } else {
-    printf("C Wrote %i bytes\n", len);
+    //printf("C Wrote %i bytes\n", len);
   }
   return 0;
 }
@@ -181,38 +164,23 @@ int ethdriver_rx(int* len)
   timeout.tv_sec = 3;  // 5s read/write timeout
   timeout.tv_usec = 0;
 
-  printf("C Attemp to read\n");
+  //printf("C Attemp to read\n");
   rv = select(tun_fd + 1, &set, NULL, NULL, &timeout);
   if (rv == -1) {
-    perror("C select\n"); /* an error accured */
+    //perror("C select\n"); /* an error accured */
     return -1;
   } else {
     if (rv == 0) {
-      printf("C timeout\n"); /* a timeout occured */
+      //printf("C timeout\n"); /* a timeout occured */
       return -1;
     } else {
-      printf("C Reading data\n");
+      //printf("C Reading data\n");
       *len = read(tun_fd, tun_buffer, sizeof(tun_buffer));
-      printf("C read %i bytes\n", *len);
+      //printf("C read %i bytes\n", *len);
       memcpy(ethdriver_buf, tun_buffer, *len);
       return 0;
     }
   }
-
-  /*
-   printf("C Attemp to read\n");
-   return -1;
-   *len = read(tun_fd,tun_buffer,sizeof(tun_buffer));
-   if(*len < 0) {
-   perror("C Reading from interface");
-   close(tun_fd);
-   exit(1);
-   } else {
-   printf("C read %i bytes\n",*len);
-   memcpy(ethdriver_buf, tun_buffer, *len);
-   }
-   return 0;
-   */
 }
 
 /**
@@ -229,15 +197,6 @@ void ethdriver_mac(uint8_t *b1, uint8_t *b2, uint8_t *b3, uint8_t *b4,
   *b4 = mac[3];
   *b5 = mac[4];
   *b6 = mac[5];
-  /*
-   printf("Hello from ethdriver_mac: ");
-   printf("b1=%u, ", *b1);
-   printf("b2=%u, ", *b2);
-   printf("b3=%u, ", *b3);
-   printf("b4=%u, ", *b4);
-   printf("b5=%u, ", *b5);
-   printf("b6=%u\n", *b6);
-   */
 }
 
 /**
@@ -261,59 +220,18 @@ int main()
   memset(&to_client_1_data, 0, sizeof(to_client_1_data));
   memset(&from_ethdriver_data, 0, sizeof(from_ethdriver_data));
 
-  uint8_t b1 = 11;
-  uint8_t b2 = 22;
-  uint8_t b3 = 33;
-  uint8_t b4 = 44;
-  uint8_t b5 = 55;
-  uint8_t b6 = 66;
-
-  /*
-   client_mac(&b1, &b2, &b3, &b4, &b5, &b6);
-
-   printf("Initializing buffer\n");
-   from_ethdriver_data.content[0] = 41;
-   from_ethdriver_data.content[1] = 44;
-   from_ethdriver_data.content[2] = 47;
-   from_ethdriver_data.content[3] = 55;
-   from_ethdriver_data.content[4] = '\0';
-
-   //char* c = (char*)client_buf_1;
-   //printf("c = %u\n",*c);
-
-   // show ethdriver data
-   printf("C ethdriver_buf[0] = %u\n", from_ethdriver_data.content[0]);
-   printf("C ethdriver_buf[1] = %u\n", from_ethdriver_data.content[1]);
-   printf("C ethdriver_buf[2] = %u\n", from_ethdriver_data.content[2]);
-   printf("C ethdriver_buf[3] = %u\n", from_ethdriver_data.content[3]);
-   printf("C ethdriver_buf[4] = %u\n", from_ethdriver_data.content[4]);
-   */
-
   int len = 0;
   int returnval = 0;
-  //printf("client_tx returned %u bytes\n", client_tx(len));
-  /*
-   // play with pointers
-   printf("C passing len = %i\n", len);
-   printf("C len address = %p\n", &len);
-   printf("C ethdriver_buf address = %p\n", ethdriver_buf);
-   printf("C from_ethdriver_data address = %p\n", &from_ethdriver_data);
-   */
+
+
   // client receive
   printf("Client receive call 1\n");
   returnval = client_rx(&len);
   printf("client_rx received %u bytes with return value %i\n", len, returnval);
 
-  /*
-   printf("C client_buf[0] = %u\n", to_client_1_data.content[0]);
-   printf("C client_buf[1] = %u\n", to_client_1_data.content[1]);
-   printf("C client_buf[2] = %u\n", to_client_1_data.content[2]);
-   printf("C client_buf[3] = %u\n", to_client_1_data.content[3]);
-   printf("C client_buf[4] = %u\n", to_client_1_data.content[4]);
-
    // data callback
    ethdriver_has_data_callback(66);
-   */
+
   char* buf = (char*)client_buf(1);
    // client transmit
    for (int i = 0; i <= sizeof(packet_bytes); i++) {
@@ -330,15 +248,6 @@ int main()
    printf("client_tx transmitted %u bytes with return value %i\n", len,
    returnval);
 
-  /*
-   printf("C ethdriver_buf[0] = %u\n", from_ethdriver_data.content[0]);
-   printf("C ethdriver_buf[1] = %u\n", from_ethdriver_data.content[1]);
-   printf("C ethdriver_buf[2] = %u\n", from_ethdriver_data.content[2]);
-   printf("C ethdriver_buf[3] = %u\n", from_ethdriver_data.content[3]);
-   printf("C ethdriver_buf[4] = %u\n", from_ethdriver_data.content[4]);
-
-   client_mac(&b1, &b2, &b3, &b4, &b5, &b6);
-   */
 
   printf("done\n");
 }
