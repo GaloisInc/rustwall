@@ -12,10 +12,12 @@ default-features = false
 features = ["proto-ipv4", "proto-ipv6",
   "socket-icmp", "socket-udp", "alloc"]
 path = "../../../../../projects/smoltcp"
+#git = "https://github.com/GaloisInc/smoltcp"
+#branch =  "firewall"
 
 [replace]
 "libc:0.2.40" = { git = 'https://github.com/GaloisInc/rs_liblibc.git' }
 
 [features]
 "debug-print" = []
-default = []
+default = ["debug-print"]

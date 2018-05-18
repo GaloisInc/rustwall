@@ -27,10 +27,29 @@ extern "C" {
     fn printf(val: *const i8);
 }
 
+#[allow(dead_code)]
+fn println_sel4(s: String) {
+    unsafe {
+        printf((s + "\n\0").as_ptr() as *const i8);
+    }
+}
+
+/// default sel4 buffer size is 4096, subtract
+/// udp header size and ipv4 header size, as well as
+/// the ethernet header size, so the whole packet
+/// can fit into the sel4 buffer, i.e.:
+/// BUFFER_SIZE = 4096 - UDP_HEADER_SIZE - IPV4_HEADER_SIZE - ETH_HEADER_SIZE
+///             = 4096  - 8 - 20 - 14
+///             = 4054
+const BUFFER_SIZE: usize = 4068;
+
+/// The index of ethernet frame payload. Also the size of
+/// the ethernet frame header
 const ETHERNET_FRAME_PAYLOAD: usize = 14;
-const BUFFER_SIZE: usize = 64000;
 const UDP_HEADER_SIZE: usize = 8;
 const IPV4_HEADER_SIZE: usize = 20;
+
+/// Number of supported fragments
 const SUPPORTED_FRAGMENTS: usize = 6;
 
 static mut TX_UDP_PAYLOAD_BUFFER: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE];
@@ -81,7 +100,7 @@ extern "C" {
         payload_len: u16,
         payload: *const u8,
         max_payload_len: u16,
-    ) -> u16;
+    ) -> i32;
 
     /// for communicating with external firewall
     /// Called after constructing a UDP packet and verifying its checksum and port number
@@ -109,7 +128,7 @@ extern "C" {
         payload_len: u16,
         payload: *const u8,
         max_payload_len: u16,
-    ) -> u16;
+    ) -> i32;
 }
 
 /// get eth device's MAC address
@@ -153,22 +172,44 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
     let mut len = len;
     // client_buf contains ethernet frame, attempt to parse it
     let eth_frame = match EthernetFrame::new_checked(sel4_ethdriver_tx_transmute(len)) {
-        Ok(frame) => frame,
-        Err(_) => return -1,
+        Ok(frame) => {
+            #[cfg(feature = "debug-print")]
+            println_sel4(format!("Firewall client_tx: got eth_frame = {}", frame));
+            frame
+        }
+        Err(e) => {
+            #[cfg(feature = "debug-print")]
+            println_sel4(format!(
+                "Firewall client_tx: error parsing eth frame: {}, returning -1",
+                e
+            ));
+            return -1;
+        }
     };
+
+    #[cfg(feature = "debug-print")]
+    println_sel4(format!(
+        "Firewall client_tx: EthernetProtocol = {}",
+        eth_frame.ethertype()
+    ));
 
     // Check if we have ipv4 traffic
     match eth_frame.ethertype() {
         EthernetProtocol::Ipv4 => {
             #[cfg(feature = "debug-print")]
-            unsafe {
-                printf(b"TX: client_rx_process_ipv4\n\0".as_ptr() as *const i8);
-            }
+            println_sel4(format!("Firewall client_tx: processing IPv4"));
             match client_tx_process_ipv4(&eth_frame) {
                 Ok(result) => {
+                    #[cfg(feature = "debug-print")]
+                    println_sel4(format!(
+                        "Firewall client_tx: client_tx_process_ipv4 returned with OK"
+                    ));
                     match result {
                         Some(ipv4_packet_len) => {
                             /* copy ipv4 packet data to the client_buf and pass it on */
+                            #[cfg(feature = "debug-print")]
+                            println_sel4(format!("Firewall client_tx: client_tx_process_ipv4 returned ipv4_packet_len = {}
+                                                  so it was an UDP packet",ipv4_packet_len));
                             unsafe {
                                 len = (ETHERNET_FRAME_PAYLOAD + ipv4_packet_len) as i32;
                                 let local_buf_ptr =
@@ -177,30 +218,70 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
                                     std::slice::from_raw_parts_mut(local_buf_ptr, len as usize);
                                 slice[ETHERNET_FRAME_PAYLOAD..]
                                     .clone_from_slice(&TX_IPV4_PACKET_BUFFER[0..ipv4_packet_len]);
+                                #[cfg(feature = "debug-print")]
+                                println_sel4(format!(
+                                    "Firewall client_tx: Updating buffer, len = {}",
+                                    len
+                                ));
+                                #[cfg(feature = "debug-print")]
+                                println_sel4(format!(
+                                    "Firewall client_tx: Updating buffer, slice = {:?}",
+                                    slice
+                                ));
                             }
                         }
-                        None => { /* pass the packet unchanged */ }
+                        None => {
+                            /* pass the packet unchanged */
+                            #[cfg(feature = "debug-print")]
+                            println_sel4(format!(
+                                "Firewall client_tx: passing packet unchanged (not a UDP packet)"
+                            ));
+                        }
                     }
                 }
-                Err(_) => {
+                Err(e) => {
                     /* error during packet processing occured */
+                    #[cfg(feature = "debug-print")]
+                    println_sel4(format!("Firewall client_tx: client_tx_process_ipv4 returned with error: {}, returning -1",e));
                     return -1;
                 }
             }
         }
         EthernetProtocol::Ipv6 => {
             // Ipv6 traffic is not allowed
+            #[cfg(feature = "debug-print")]
+            println_sel4(format!(
+                "Firewall client_tx: dropping IPV6 traffic, returning -1"
+            ));
             return -1;
         }
         // passthrough the traffic
-        _ => { /* do nothing */ }
+        _ => {
+            /* do nothing */
+
+            #[cfg(feature = "debug-print")]
+            println_sel4(format!(
+                "Firewall client_tx: passing through unrecognized eth protocol"
+            ));
+        }
     }
 
     // copy data to the ehdriver buffer
+    #[cfg(feature = "debug-print")]
+    println_sel4(format!(
+        "Firewall client_tx: copying {} bytes from client_buf(1) to ethdriver_buf",
+        len
+    ));
     unsafe {
         memcpy(ethdriver_buf, client_buf(1), len as usize);
     }
-    return unsafe { ethdriver_tx(len) };
+    let ret = unsafe { ethdriver_tx(len) };
+    #[cfg(feature = "debug-print")]
+    println_sel4(format!(
+        "Firewall client_tx: returing {} after calling ethdriver_tx({})",
+        ret, len
+    ));
+    ret
 }
 
 /// Process ipv4 packet (only when external firewall is allowed)
@@ -216,13 +297,46 @@ fn client_tx_process_ipv4<'frame>(
     let ipv4_repr = Ipv4Repr::parse(&ipv4_packet, &checksum_caps)?;
     let ip_payload = ipv4_packet.payload();
 
+    #[cfg(feature = "debug-print")]
+    println_sel4(format!(
+        "Firewall client_tx_process_ipv4: ipv4 protocol = {}",
+        ipv4_repr.protocol
+    ));
+
     match ipv4_repr.protocol {
-        IpProtocol::Icmp => return Ok(None), // passthrough
-        IpProtocol::Igmp => return Ok(None), // passthrough
+        IpProtocol::Icmp => {
+            /* passthrough */
+            let r = Ok(None);
+            #[cfg(feature = "debug-print")]
+            println_sel4(format!(
+                "Firewall client_tx_process_ipv4: ICMP protocol, returning {:?}",
+                r
+            ));
+            return r;
+        }
+        IpProtocol::Igmp => {
+            /* passthrough */
+            let r = Ok(None);
+            #[cfg(feature = "debug-print")]
+            println_sel4(format!(
+                "Firewall client_tx_process_ipv4: I protocol, returning {:?}",
+                r
+            ));
+            return r;
+        }
         IpProtocol::Udp => {
             /* check with external firewall */
+            #[cfg(feature = "debug-print")]
+            println_sel4(format!(
+                "Firewall client_tx_process_ipv4: UDP protocol, parsing further"
+            ));
             match client_tx_process_udp(ipv4_repr, ip_payload) {
                 Ok(udp_packet_len) => {
+                    #[cfg(feature = "debug-print")]
+                    println_sel4(format!(
+                        "Firewall client_tx_process_ipv4: keep UDP packet, udp_packet_len={}",
+                        udp_packet_len
+                    ));
                     let ip_repr = Ipv4Repr {
                         src_addr: ipv4_repr.src_addr,
                         dst_addr: ipv4_repr.dst_addr,
@@ -242,14 +356,35 @@ fn client_tx_process_ipv4<'frame>(
                         ip_packet.fill_checksum();
                         ip_packet
                     };
-                    return Ok(Some(ip_packet.total_len() as usize));
+                    let r = Ok(Some(ip_packet.total_len() as usize));
+                    #[cfg(feature = "debug-print")]
+                    println_sel4(format!(
+                        "Firewall client_tx_process_ipv4: return IP packet of length = {:?}",
+                        r
+                    ));
+                    return r;
                 }
-                Err(e) => return Err(e), // drop packet
+                Err(e) => {
+                    /* drop packet */
+                    let e = Err(e);
+                    #[cfg(feature = "debug-print")]
+                    println_sel4(format!(
+                        "Firewall client_tx_process_ipv4: drop UDP packet, return {:?}",
+                        e
+                    ));
+                    return e;
+                }
             }
         }
         _ => {
             /* unknown protocol, drop packet */
-            return Err(Error::Unrecognized);
+            let e = Err(Error::Unrecognized);
+            #[cfg(feature = "debug-print")]
+            println_sel4(format!(
+                "Firewall client_tx_process_ipv4: Unknown protocol, returning error = {:?}",
+                e
+            ));
+            return e;
         }
     }
 }
@@ -283,15 +418,27 @@ fn client_tx_process_udp<'frame>(ip_repr: Ipv4Repr, ip_payload: &'frame [u8]) ->
         bytes
     };
 
-    #[cfg(feature = "debug-print")]
-    unsafe {
-        printf(b"TX: Calling external firewall\n\0".as_ptr() as *const i8);
-    }
-
     // copy data to the buffer
     unsafe {
         TX_UDP_PAYLOAD_BUFFER[0..udp_packet.payload().len()].copy_from_slice(udp_packet.payload());
     }
+
+    #[cfg(feature = "debug-print")]
+    println_sel4(format!(
+        "Firewall client_tx_process_udp: calling external firewall.
+        src_addr_byes = {:?},
+        udp_packet.src_port = {},
+        dst_addr_bytes = {:?},
+        udp_packet.dst_port = {},
+        udp payload len = {}
+        buffer size = {}",
+        src_addr_bytes,
+        udp_packet.src_port(),
+        dst_addr_bytes,
+        udp_packet.dst_port(),
+        udp_packet.payload().len() as u16,
+        BUFFER_SIZE as u16,
+    ));
 
     // call external firewall
     let payload_len = unsafe {
@@ -308,6 +455,20 @@ fn client_tx_process_udp<'frame>(ip_repr: Ipv4Repr, ip_payload: &'frame [u8]) ->
 
     // if non-zero return, parse payload and return it
     if payload_len > 0 {
+        #[cfg(feature = "debug-print")]
+        println_sel4(format!(
+            "Firewall client_tx_process_udp: returned payload len = {}",
+            payload_len
+        ));
+        if payload_len as usize > BUFFER_SIZE {
+            let e = Err(Error::Dropped);
+            #[cfg(feature = "debug-print")]
+            println_sel4(format!(
+                "Firewall client_tx_process_udp: payload len > buffer size, returning {:?}",
+                e
+            ));
+            return e;
+        }
         unsafe {
             let udp_data = &TX_UDP_PAYLOAD_BUFFER[0..payload_len as usize];
             let udp_repr = UdpRepr {
@@ -329,10 +490,22 @@ fn client_tx_process_udp<'frame>(ip_repr: Ipv4Repr, ip_payload: &'frame [u8]) ->
                 &IpAddress::from(ip_repr.dst_addr),
             );
 
-            Ok(udp_repr.buffer_len())
+            let r = Ok(udp_repr.buffer_len());
+            #[cfg(feature = "debug-print")]
+            println_sel4(format!(
+                "Firewall client_tx_process_udp: udp packet created, returning {:?}",
+                r
+            ));
+            return r;
         }
     } else {
-        Err(Error::Dropped)
+        let e = Err(Error::Dropped);
+        #[cfg(feature = "debug-print")]
+        println_sel4(format!(
+            "Firewall client_tx_process_udp: packet dropped, returning {:?}",
+            e
+        ));
+        return e;
     }
 }
 
@@ -344,18 +517,14 @@ unsafe fn client_rx_get_fragments_set() -> &'static Option<UnsafeCell<FragmentSe
 
     if !INIT {
         let mut fragments = FragmentSet::new(vec![]);
-        
         for _ in 0..SUPPORTED_FRAGMENTS {
             let fragment = FragmentedPacket::new(vec![0; 65535]);
-            fragments.add(fragment);    
+            fragments.add(fragment);
         }
-
         let val = UnsafeCell::new(fragments);
         FRAGMENTS = Some(val);
-
         INIT = true;
     }
-
     &FRAGMENTS
 }
 
@@ -367,54 +536,89 @@ unsafe fn client_rx_get_fragments_set() -> &'static Option<UnsafeCell<FragmentSe
 pub extern "C" fn client_rx(len: *mut i32) -> i32 {
     let result = unsafe { ethdriver_rx(len) };
     if result == -1 {
-        return -1;
-    }
-
-    #[cfg(feature = "debug-print")]
-    unsafe {
-        printf(b"RX: parsing eth frame\n\0".as_ptr() as *const i8);
+        #[cfg(feature = "debug-print")]
+        println_sel4(format!(
+            "Firewall client_rx: error reading ethdriver_rx, returning {}",
+            result
+        ));
+        unsafe {
+            *len = 0;
+        }
+        return result;
     }
 
     // ethdriver_buf contains ethernet frame, attempt to parse it
     let eth_frame = match EthernetFrame::new_checked(sel4_ethdriver_rx_transmute(len)) {
-        Ok(frame) => frame,
-        Err(_) => {
-          unsafe {*len = 0;}
-          return -1;
-        },
+        Ok(frame) => {
+            #[cfg(feature = "debug-print")]
+            println_sel4(format!("Firewall client_rx: got eth_frame = {}", frame));
+            frame
+        }
+        Err(e) => {
+            #[cfg(feature = "debug-print")]
+            println_sel4(format!(
+                "Firewall client_rx: error parsing eth frame: {}, returning -1",
+                e
+            ));
+            unsafe {
+                *len = 0;
+            }
+            return -1;
+        }
     };
 
     // Ignore any packets not directed to our hardware address.
     let local_ethernet_addr = get_device_mac();
+    #[cfg(feature = "debug-print")]
+    println_sel4(format!(
+        "Firewall client_rx: local eth addr: {}",
+        local_ethernet_addr
+    ));
     if !eth_frame.dst_addr().is_broadcast() && !eth_frame.dst_addr().is_multicast()
         && eth_frame.dst_addr() != local_ethernet_addr
     {
         #[cfg(feature = "debug-print")]
+        println_sel4(format!(
+            "Firewall client_rx: not the right destination address,
+            is dst addr broadcast = {}, is dst addr multicast = {}, returning -1",
+            eth_frame.dst_addr().is_broadcast(),
+            eth_frame.dst_addr().is_multicast()
+        ));
         unsafe {
-            printf(b"RX: not my address\n\0".as_ptr() as *const i8);
+            *len = 0;
         }
-        unsafe {*len = 0;}
         return -1;
     }
+
+    #[cfg(feature = "debug-print")]
+    println_sel4(format!(
+        "Firewall client_rx: EthernetProtocol = {}",
+        eth_frame.ethertype()
+    ));
 
     // Check if we have ipv4 traffic
     match eth_frame.ethertype() {
         EthernetProtocol::Ipv4 => {
             #[cfg(feature = "debug-print")]
-            unsafe {
-                printf(b"RX: client_rx_process_ipv4\n\0".as_ptr() as *const i8);
-            }
+            println_sel4(format!("Firewall client_rx: processing IPv4"));
             let mut fragments = unsafe {
                 match client_rx_get_fragments_set() {
                     None => None,
-                    Some(cell) => Some(&mut*cell.get()),
+                    Some(cell) => Some(&mut *cell.get()),
                 }
             };
             match client_rx_process_ipv4(&eth_frame, &mut fragments) {
                 Ok(result) => {
+                    #[cfg(feature = "debug-print")]
+                    println_sel4(format!(
+                        "Firewall client_rx: client_rx_process_ipv4 returned with OK"
+                    ));
                     match result {
                         Some(ipv4_packet_len) => {
                             /* copy ipv4 packet data to the ethernetdriver_buf and pass it on */
+                            #[cfg(feature = "debug-print")]
+                            println_sel4(format!("Firewall client_rx: client_rx_process_ipv4 returned ipv4_packet_len = {}
+                                                  so it was an UDP packet",ipv4_packet_len));
                             unsafe {
                                 *len = (ETHERNET_FRAME_PAYLOAD + ipv4_packet_len) as i32;
                                 let local_buf_ptr =
@@ -423,31 +627,73 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
                                     std::slice::from_raw_parts_mut(local_buf_ptr, *len as usize);
                                 slice[ETHERNET_FRAME_PAYLOAD..]
                                     .clone_from_slice(&RX_IPV4_PACKET_BUFFER[0..ipv4_packet_len]);
+                                #[cfg(feature = "debug-print")]
+                                println_sel4(format!(
+                                    "Firewall client_rx: Updating buffer, len = {}",
+                                    *len
+                                ));
+                                #[cfg(feature = "debug-print")]
+                                println_sel4(format!(
+                                    "Firewall client_rx: Updating buffer, slice = {:?}",
+                                    slice
+                                ));
                             }
                         }
-                        None => { /* pass the packet unchanged */ }
+                        None => {
+                            /* pass the packet unchanged */
+                            #[cfg(feature = "debug-print")]
+                            println_sel4(format!(
+                                "Firewall client_rx: passing packet unchanged (not a UDP packet)"
+                            ));
+                        }
                     }
                 }
-                Err(_) => {
+                Err(e) => {
                     /* error during packet processing occured */
-                    unsafe {*len = 0;}
+                    #[cfg(feature = "debug-print")]
+                    println_sel4(format!(
+                            "Firewall client_rx: client_rx_process_ipv4 returned with error: {}, returning -1",
+                            e
+                    ));
+                    unsafe {
+                        *len = 0;
+                    }
                     return -1;
                 }
             }
         }
         EthernetProtocol::Ipv6 => {
-            // Ipv6 traffic is not allowed
-          unsafe {*len = 0;}
-          return -1;
+            /* Ipv6 traffic is not allowed */
+            #[cfg(feature = "debug-print")]
+            println_sel4(format!(
+                "Firewall client_rx: dropping IPV6 traffic, returning -1"
+            ));
+            unsafe {
+                *len = 0;
+            }
+            return -1;
         }
         // passthrough the traffic
-        _ => { /* do nothing */ }
+        _ => {
+            /* do nothing */
+            #[cfg(feature = "debug-print")]
+            println_sel4(format!(
+                "Firewall client_rx: passing through unrecognized eth protocol"
+            ));
+        }
     }
 
     unsafe {
+        #[cfg(feature = "debug-print")]
+        println_sel4(format!(
+            "Firewall client_rx: copying {} bytes from client_buf(1) to ethdriver_buf",
+            *len
+        ));
         memcpy(client_buf(1), ethdriver_buf, *len as usize);
     }
 
+    #[cfg(feature = "debug-print")]
+    println_sel4(format!("Firewall client_rx: returing result {}", result));
     return result;
 }
 
@@ -461,6 +707,10 @@ fn client_rx_process_ipv4_fragment<'frame, 'r>(
 ) -> Result<Option<Ipv4Packet<&'r [u8]>>> {
     match fragments {
         Some(ref mut fragments) => {
+            #[cfg(feature = "debug-print")]
+            println_sel4(format!(
+                "Firewall client_rx_process_ipv4_fragment: got a fragment"
+            ));
             // get an existing fragment or attempt to get a new one
             let fragment = match fragments.get_packet(
                 ipv4_packet.ident(),
@@ -539,6 +789,10 @@ fn client_rx_process_ipv4<'frame>(
 
     let ipv4_packet;
     if ipv4_packet_in.more_frags() || ipv4_packet_in.frag_offset() > 0 {
+        #[cfg(feature = "debug-print")]
+        println_sel4(format!(
+            "Firewall client_rx_process_ipv4: fragmented packet detected"
+        ));
         static mut MS: i64 = 0;
         unsafe {
             MS += 1; // helper for managing too-old fragments
@@ -559,13 +813,46 @@ fn client_rx_process_ipv4<'frame>(
     let ipv4_repr = Ipv4Repr::parse(&ipv4_packet, &checksum_caps)?;
     let ip_payload = ipv4_packet.payload();
 
+    #[cfg(feature = "debug-print")]
+    println_sel4(format!(
+        "Firewall client_rx_process_ipv4: ipv4 protocol = {}",
+        ipv4_repr.protocol
+    ));
+
     match ipv4_repr.protocol {
-        IpProtocol::Icmp => return Ok(None), // passthrough
-        IpProtocol::Igmp => return Ok(None), // passthrough
+        IpProtocol::Icmp => {
+            /* passthrough */
+            let r = Ok(None);
+            #[cfg(feature = "debug-print")]
+            println_sel4(format!(
+                "Firewall client_rx_process_ipv4: ICMP protocol, returning {:?}",
+                r
+            ));
+            return r;
+        }
+        IpProtocol::Igmp => {
+            /* passthrough */
+            let r = Ok(None);
+            #[cfg(feature = "debug-print")]
+            println_sel4(format!(
+                "Firewall client_rx_process_ipv4: I protocol, returning {:?}",
+                r
+            ));
+            return r;
+        }
         IpProtocol::Udp => {
             /* check with external firewall */
+            #[cfg(feature = "debug-print")]
+            println_sel4(format!(
+                "Firewall client_rx_process_ipv4: UDP protocol, parsing further"
+            ));
             match client_rx_process_udp(ipv4_repr, ip_payload) {
                 Ok(udp_packet_len) => {
+                    #[cfg(feature = "debug-print")]
+                    println_sel4(format!(
+                        "Firewall client_rx_process_ipv4: keep UDP packet, udp_packet_len={}",
+                        udp_packet_len
+                    ));
                     let ip_repr = Ipv4Repr {
                         src_addr: ipv4_repr.src_addr,
                         dst_addr: ipv4_repr.dst_addr,
@@ -585,14 +872,35 @@ fn client_rx_process_ipv4<'frame>(
                         ip_packet.fill_checksum();
                         ip_packet
                     };
-                    return Ok(Some(ip_packet.total_len() as usize));
+                    let r = Ok(Some(ip_packet.total_len() as usize));
+                    #[cfg(feature = "debug-print")]
+                    println_sel4(format!(
+                        "Firewall client_rx_process_ipv4: return IP packet of length = {:?}",
+                        r
+                    ));
+                    return r;
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    /* drop packet */
+                    let e = Err(e);
+                    #[cfg(feature = "debug-print")]
+                    println_sel4(format!(
+                        "Firewall client_rx_process_ipv4: drop UDP packet, return {:?}",
+                        e
+                    ));
+                    return e;
+                }
             }
         }
         _ => {
-            /* unknown protocol */
-            return Err(Error::Unrecognized);
+            /* unknown protocol, drop packet */
+            let e = Err(Error::Unrecognized);
+            #[cfg(feature = "debug-print")]
+            println_sel4(format!(
+                "Firewall client_rx_process_ipv4: Unknown protocol, returning error = {:?}",
+                e
+            ));
+            return e;
         }
     }
 }
@@ -625,16 +933,27 @@ fn client_rx_process_udp<'frame>(ip_repr: Ipv4Repr, ip_payload: &'frame [u8]) ->
         bytes
     };
 
-    // call external firewall
-    #[cfg(feature = "debug-print")]
-    unsafe {
-        printf(b"RX: Calling external firewall\n\0".as_ptr() as *const i8);
-    }
-
     // copy data to the buffer
     unsafe {
         RX_UDP_PAYLOAD_BUFFER[0..udp_packet.payload().len()].copy_from_slice(udp_packet.payload());
     }
+
+    #[cfg(feature = "debug-print")]
+    println_sel4(format!(
+        "Firewall client_rx_process_udp: calling external firewall.
+        src_addr_byes = {:?},
+        udp_packet.src_port = {},
+        dst_addr_bytes = {:?},
+        udp_packet.dst_port = {},
+        udp payload len = {}
+        buffer size = {}",
+        src_addr_bytes,
+        udp_packet.src_port(),
+        dst_addr_bytes,
+        udp_packet.dst_port(),
+        udp_packet.payload().len() as u16,
+        BUFFER_SIZE as u16,
+    ));
 
     // call external firewall
     let payload_len = unsafe {
@@ -651,6 +970,20 @@ fn client_rx_process_udp<'frame>(ip_repr: Ipv4Repr, ip_payload: &'frame [u8]) ->
 
     // if non-zero return, parse payload and return it
     if payload_len > 0 {
+        #[cfg(feature = "debug-print")]
+        println_sel4(format!(
+            "Firewall client_rx_process_udp: returned payload len = {}",
+            payload_len
+        ));
+        if payload_len as usize > BUFFER_SIZE {
+            let e = Err(Error::Dropped);
+            #[cfg(feature = "debug-print")]
+            println_sel4(format!(
+                "Firewall client_rx_process_udp: payload len > buffer size, returning {:?}",
+                e
+            ));
+            return e;
+        }
         unsafe {
             let udp_data = &RX_UDP_PAYLOAD_BUFFER[0..payload_len as usize];
             let udp_repr = UdpRepr {
@@ -672,10 +1005,22 @@ fn client_rx_process_udp<'frame>(ip_repr: Ipv4Repr, ip_payload: &'frame [u8]) ->
                 &IpAddress::from(ip_repr.dst_addr),
             );
 
-            Ok(udp_repr.buffer_len())
+            let r = Ok(udp_repr.buffer_len());
+            #[cfg(feature = "debug-print")]
+            println_sel4(format!(
+                "Firewall client_rx_process_udp: udp packet created, returning {:?}",
+                r
+            ));
+            return r;
         }
     } else {
-        Err(Error::Dropped)
+        let e = Err(Error::Dropped);
+        #[cfg(feature = "debug-print")]
+        println_sel4(format!(
+            "Firewall client_rx_process_udp: packet dropped, returning {:?}",
+            e
+        ));
+        return e;
     }
 }
 
@@ -683,6 +1028,11 @@ fn client_rx_process_udp<'frame>(ip_repr: Ipv4Repr, ip_payload: &'frame [u8]) ->
 /// `badge` is not used
 #[no_mangle]
 pub extern "C" fn ethdriver_has_data_callback(_badge: u32) {
+    #[cfg(feature = "debug-print")]
+    println_sel4(format!(
+        "Firewall ethdriver_has_data_callback: got badge = {}, calling client_emit(1);",
+        _badge
+    ));
     unsafe {
         client_emit(1);
     }
@@ -693,6 +1043,12 @@ pub extern "C" fn ethdriver_has_data_callback(_badge: u32) {
 /// The slice can be empty
 fn sel4_ethdriver_rx_transmute<'a>(len: *mut i32) -> &'a [u8] {
     unsafe {
+        if ethdriver_buf.is_null() {
+            #[cfg(feature = "debug-print")]
+            println_sel4(format!(
+                "Firewall sel4_ethdriver_rx_transmute: ethdriver_buf is NULL! Aborting."
+            ));
+        }
         assert!(!ethdriver_buf.is_null());
         // create a slice of length `len` from the buffer
         let local_buf_ptr = std::mem::transmute::<*mut c_void, *mut u8>(ethdriver_buf);
@@ -706,6 +1062,12 @@ fn sel4_ethdriver_rx_transmute<'a>(len: *mut i32) -> &'a [u8] {
 /// The slice can be empty
 fn sel4_ethdriver_tx_transmute<'a>(len: i32) -> &'a [u8] {
     unsafe {
+        if client_buf(1).is_null() {
+            #[cfg(feature = "debug-print")]
+            println_sel4(format!(
+                "Firewall sel4_ethdriver_tx_transmute: client_buf(1) is NULL! Aborting."
+            ));
+        }
         assert!(!client_buf(1).is_null());
         // create a slice of length `len` from the buffer
         let local_buf_ptr = std::mem::transmute::<*mut c_void, *mut u8>(client_buf(1));
