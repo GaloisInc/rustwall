@@ -604,7 +604,7 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
             let mut fragments = unsafe {
                 match client_rx_get_fragments_set() {
                     &None => None,
-                    &Some(cell) => Some(&mut *cell.get()),
+                    &Some(ref cell) => Some(&mut *cell.get()),
                 }
             };
             match client_rx_process_ipv4(&eth_frame, &mut fragments) {
@@ -705,8 +705,8 @@ fn client_rx_process_ipv4_fragment<'frame, 'r>(
     timestamp: Instant,
     fragments: &'r mut Option<&'r mut FragmentSet<'static>>,
 ) -> Result<Option<Ipv4Packet<&'r [u8]>>> {
-    match fragments {
-        &Some(ref mut fragments) => {
+    match *fragments {
+        Some(ref mut fragments) => {
             #[cfg(feature = "debug-print")]
             println_sel4(format!(
                 "Firewall client_rx_process_ipv4_fragment: got a fragment"
@@ -770,7 +770,7 @@ fn client_rx_process_ipv4_fragment<'frame, 'r>(
             // not the last fragment
             return Ok(None);
         }
-        &None => {
+        None => {
             return Err(Error::NoFragmentSet);
         }
     }
