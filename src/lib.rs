@@ -601,12 +601,15 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
         EthernetProtocol::Ipv4 => {
             #[cfg(feature = "debug-print")]
             println_sel4(format!("Firewall client_rx: processing IPv4"));
+            let mut fragments = None;
+            /*
             let mut fragments = unsafe {
                 match client_rx_get_fragments_set() {
                     &None => None,
                     &Some(ref cell) => Some(&mut *cell.get()),
                 }
             };
+            */
             match client_rx_process_ipv4(&eth_frame, &mut fragments) {
                 Ok(result) => {
                     #[cfg(feature = "debug-print")]
