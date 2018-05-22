@@ -516,15 +516,32 @@ unsafe fn client_rx_get_fragments_set() -> &'static Option<UnsafeCell<FragmentSe
     static mut INIT: bool = false;
 
     if !INIT {
+        #[cfg(feature = "debug-print")]
+        println_sel4(format!(
+            "Firewall client_rx_get_fragments_set: initializing fragment set"
+        ));
         let mut fragments = FragmentSet::new(vec![]);
-        for _ in 0..SUPPORTED_FRAGMENTS {
+        for idx in 0..SUPPORTED_FRAGMENTS {
+            #[cfg(feature = "debug-print")]
+            println_sel4(format!(
+                "Firewall client_rx_get_fragments_set: adding fragment {}",
+                idx
+            ));
             let fragment = FragmentedPacket::new(vec![0; 65535]);
             fragments.add(fragment);
         }
+        #[cfg(feature = "debug-print")]
+        println_sel4(format!(
+            "Firewall client_rx_get_fragments_set: Creating unsafe cell"
+        ));
         let val = UnsafeCell::new(fragments);
         FRAGMENTS = Some(val);
         INIT = true;
     }
+    #[cfg(feature = "debug-print")]
+    println_sel4(format!(
+        "Firewall client_rx_get_fragments_set: Returning fragment set"
+    ));
     &FRAGMENTS
 }
 
@@ -601,15 +618,13 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
         EthernetProtocol::Ipv4 => {
             #[cfg(feature = "debug-print")]
             println_sel4(format!("Firewall client_rx: processing IPv4"));
-            let mut fragments = None;
-            /*
+            //let mut fragments = None;
             let mut fragments = unsafe {
                 match client_rx_get_fragments_set() {
                     &None => None,
                     &Some(ref cell) => Some(&mut *cell.get()),
                 }
             };
-            */
             match client_rx_process_ipv4(&eth_frame, &mut fragments) {
                 Ok(result) => {
                     #[cfg(feature = "debug-print")]
@@ -712,7 +727,8 @@ fn client_rx_process_ipv4_fragment<'frame, 'r>(
         Some(ref mut fragments) => {
             #[cfg(feature = "debug-print")]
             println_sel4(format!(
-                "Firewall client_rx_process_ipv4_fragment: got a fragment"
+                "Firewall client_rx_process_ipv4_fragment: got a fragment with id = {}",
+                ipv4_packet.ident()
             ));
             // get an existing fragment or attempt to get a new one
             let fragment = match fragments.get_packet(
@@ -727,6 +743,10 @@ fn client_rx_process_ipv4_fragment<'frame, 'r>(
 
             if fragment.is_empty() {
                 // this is a new packet
+                #[cfg(feature = "debug-print")]
+                println_sel4(format!(
+                    "Firewall client_rx_process_ipv4_fragment: fragment is empty"
+                ));
                 fragment.start(
                     ipv4_packet.ident(),
                     ipv4_packet.src_addr(),
@@ -736,6 +756,10 @@ fn client_rx_process_ipv4_fragment<'frame, 'r>(
 
             if !ipv4_packet.more_frags() {
                 // last fragment, remember data length
+                #[cfg(feature = "debug-print")]
+                println_sel4(format!(
+                    "Firewall client_rx_process_ipv4_fragment: this is the last fragment"
+                ));
                 fragment.set_total_len(
                     ipv4_packet.frag_offset() as usize + ipv4_packet.total_len() as usize,
                 );
@@ -748,8 +772,18 @@ fn client_rx_process_ipv4_fragment<'frame, 'r>(
                 ipv4_packet.into_inner(),
                 timestamp,
             ) {
-                Ok(_) => {}
-                Err(_) => {
+                Ok(_) => {
+                    #[cfg(feature = "debug-print")]
+                    println_sel4(format!(
+                        "Firewall client_rx_process_ipv4_fragment: adding fragment OK"
+                    ));
+                }
+                Err(e) => {
+                    #[cfg(feature = "debug-print")]
+                    println_sel4(format!(
+                        "Firewall client_rx_process_ipv4_fragment: adding fragment error {}",
+                        e
+                    ));
                     fragment.reset();
                     return Err(Error::TooManyFragments);
                 }
@@ -757,7 +791,22 @@ fn client_rx_process_ipv4_fragment<'frame, 'r>(
 
             if fragment.check_contig_range() {
                 // this is the last packet, attempt reassembly
-                let front = fragment.front().unwrap();
+                let front = match fragment.front() {
+                    Ok(f) => {
+                        #[cfg(feature = "debug-print")]
+                        println_sel4(format!(
+                            "Firewall client_rx_process_ipv4_fragment: fragment reassembly OK"
+                        ));
+                    }
+                    Err(e) => {
+                        #[cfg(feature = "debug-print")]
+                        println_sel4(format!(
+                            "Firewall client_rx_process_ipv4_fragment: fragment reassebly failed with error {}",
+                            e
+                        ));
+                        return e;
+                    }
+                };
                 {
                     // because the different mutability of the underlying buffers, we have to do this exercise
                     let mut ipv4_packet =
@@ -771,10 +820,22 @@ fn client_rx_process_ipv4_fragment<'frame, 'r>(
             }
 
             // not the last fragment
-            return Ok(None);
+            let r = Ok(None);
+            #[cfg(feature = "debug-print")]
+            println_sel4(format!(
+                "Firewall client_rx_process_ipv4_fragment: this wasn't the last fragment, returning {}",
+                r
+            ));
+            return r;
         }
         None => {
-            return Err(Error::NoFragmentSet);
+            let e = Error::NoFragmentSet;
+            #[cfg(feature = "debug-print")]
+            println_sel4(format!(
+                "Firewall client_rx_process_ipv4_fragment: no fragment set provided, returning {}",
+                e
+            )); 
+            return Err(e);
         }
     }
 }
