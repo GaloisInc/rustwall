@@ -781,7 +781,7 @@ fn client_rx_process_ipv4_fragment<'frame, 'r>(
                 Err(e) => {
                     #[cfg(feature = "debug-print")]
                     println_sel4(format!(
-                        "Firewall client_rx_process_ipv4_fragment: adding fragment error {}",
+                        "Firewall client_rx_process_ipv4_fragment: adding fragment error {:?}",
                         e
                     ));
                     fragment.reset();
@@ -792,19 +792,19 @@ fn client_rx_process_ipv4_fragment<'frame, 'r>(
             if fragment.check_contig_range() {
                 // this is the last packet, attempt reassembly
                 let front = match fragment.front() {
-                    Ok(f) => {
+                    Some(f) => {
                         #[cfg(feature = "debug-print")]
                         println_sel4(format!(
-                            "Firewall client_rx_process_ipv4_fragment: fragment reassembly OK"
+                            "Firewall client_rx_process_ipv4_fragment: fragment reassembly Some"
                         ));
+                        f
                     }
-                    Err(e) => {
+                    None => {
                         #[cfg(feature = "debug-print")]
                         println_sel4(format!(
-                            "Firewall client_rx_process_ipv4_fragment: fragment reassebly failed with error {}",
-                            e
+                            "Firewall client_rx_process_ipv4_fragment: fragment reassebly None, return Ok(None)"
                         ));
-                        return e;
+                        return Ok(None);
                     }
                 };
                 {
@@ -823,7 +823,7 @@ fn client_rx_process_ipv4_fragment<'frame, 'r>(
             let r = Ok(None);
             #[cfg(feature = "debug-print")]
             println_sel4(format!(
-                "Firewall client_rx_process_ipv4_fragment: this wasn't the last fragment, returning {}",
+                "Firewall client_rx_process_ipv4_fragment: this wasn't the last fragment, returning {:?}",
                 r
             ));
             return r;
