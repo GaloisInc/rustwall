@@ -554,36 +554,36 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
     unsafe {
         /* preventively erase length */
         *len = 0;
-    }
-    match FIREWALL_RX {
-        None => {
-            /* nothing to see here*/
-            return -1;
-        }
-        Some(ref mut v) => {
-            /* shared data vector was initialized*/
-            if !v.is_empty() {
-                /* we have some data */
-                match v.pop() {
-                    None => { /* shouldn't be here */ }
-                    Some(packet) => {
-                        /* copy data to client buffer */
-                        unsafe {
-                            *len = packet.len() as i32;
-                            memcpy(client_buf(1), packet.as_ptr(), packet.len());
-                        }
-                        if v.len() > 0 {
-                            /* we have more packets to receive */
-                            return 1;
-                        } else {
-                            /* we have only this packet */
-                            return 0;
+
+        match FIREWALL_RX {
+            None => {
+                /* nothing to see here*/
+                return -1;
+            }
+            Some(ref mut v) => {
+                /* shared data vector was initialized*/
+                if !v.is_empty() {
+                    /* we have some data */
+                    match v.pop() {
+                        None => { /* shouldn't be here */ }
+                        Some(packet) => {
+                            /* copy data to client buffer */
+                                *len = packet.len() as i32;
+                                let packet_ptr = std::mem::transmute::<*const u8, *const c_void>(packet.as_ptr());
+                                memcpy(client_buf(1), packet_ptr, packet.len());
+                            if v.len() > 0 {
+                                /* we have more packets to receive */
+                                return 1;
+                            } else {
+                                /* we have only this packet */
+                                return 0;
+                            }
                         }
                     }
                 }
+                /* no data to return */
+                return -1;
             }
-            /* no data to return */
-            return -1;
         }
     }
 }
@@ -654,7 +654,7 @@ fn client_rx_process_ipv4_fragment<'frame, 'r>(
                 Err(e) => {
                     #[cfg(feature = "debug-print")]
                     println_sel4(format!(
-                        "Firewall client_rx_process_ipv4_fragment: adding fragment error {}",
+                        "Firewall client_rx_process_ipv4_fragment: adding fragment error {:?}",
                         e
                     ));
                     fragment.reset();
@@ -665,19 +665,19 @@ fn client_rx_process_ipv4_fragment<'frame, 'r>(
             if fragment.check_contig_range() {
                 // this is the last packet, attempt reassembly
                 let front = match fragment.front() {
-                    Ok(f) => {
+                    Some(f) => {
                         #[cfg(feature = "debug-print")]
                         println_sel4(format!(
                             "Firewall client_rx_process_ipv4_fragment: fragment reassembly OK"
                         ));
+                        f
                     }
-                    Err(e) => {
+                    None => {
                         #[cfg(feature = "debug-print")]
                         println_sel4(format!(
-                            "Firewall client_rx_process_ipv4_fragment: fragment reassebly failed with error {}",
-                            e
+                            "Firewall client_rx_process_ipv4_fragment: fragment reassebly failed, returning Ok(None)",
                         ));
-                        return e;
+                        return Ok(None);
                     }
                 };
                 {
@@ -696,7 +696,7 @@ fn client_rx_process_ipv4_fragment<'frame, 'r>(
             let r = Ok(None);
             #[cfg(feature = "debug-print")]
             println_sel4(format!(
-                "Firewall client_rx_process_ipv4_fragment: this wasn't the last fragment, returning {}",
+                "Firewall client_rx_process_ipv4_fragment: this wasn't the last fragment, returning {:?}",
                 r
             ));
             return r;
@@ -973,50 +973,51 @@ pub extern "C" fn ethdriver_has_data_callback(_badge: u32) {
         _badge
     ));
 
-    loop {
-        match firewall_rx() {
-            FirewallRx::NoData => {
-                /* no data */
-                break;
-            }
-            FirewallRx::Data(packet) => {
-                /* add exactly one packet and break */
-                match FIREWALL_RX {
-                    None => {
-                        /* Initialize FwRx */
-                        FIREWALL_RX = Some(vec![packet]);
-                    }
-                    Some(ref mut packet_buffer) => {
-                        /* add a packet to the buffer */ 
-                        packet_buffer.push(packet);
-                    }
-                }
-                break;
-            }
-            FirewallRx::MoreData(data) => {
-                /* more packets in the queue, add one and keep looping */
-                match FIREWALL_RX {
-                    None => {
-                        /* Initialize FwRx */
-                        FIREWALL_RX = Some(vec![packet]);
-                    }
-                    Some(ref mut packet_buffer) => {
-                        /* add a packet to the buffer */
-                        packet_buffer.push(packet);
-                    }
-                }
-            }
-        }
-    } /* end of loop, no more data*/
+unsafe {
 
-    match FIREWALL_RX {
-        Some(_) => {
-            /* we have some data in the queeue, emit*/
-            unsafe {
-                client_emit(1);
+        loop {
+            match firewall_rx() {
+                FirewallRx::NoData => {
+                    /* no data */
+                    break;
+                }
+                FirewallRx::Data(packet) => {
+                    /* add exactly one packet and break */
+                    match FIREWALL_RX {
+                        None => {
+                            /* Initialize FwRx */
+                            FIREWALL_RX = Some(vec![packet]);
+                        }
+                        Some(ref mut packet_buffer) => {
+                            /* add a packet to the buffer */ 
+                            packet_buffer.push(packet);
+                        }
+                    }
+                    break;
+                }
+                FirewallRx::MoreData(packet) => {
+                    /* more packets in the queue, add one and keep looping */
+                    match FIREWALL_RX {
+                        None => {
+                            /* Initialize FwRx */
+                            FIREWALL_RX = Some(vec![packet]);
+                        }
+                        Some(ref mut packet_buffer) => {
+                            /* add a packet to the buffer */
+                            packet_buffer.push(packet);
+                        }
+                    }
+                }
             }
+        } /* end of loop, no more data*/
+
+        match FIREWALL_RX {
+            Some(_) => {
+                /* we have some data in the queeue, emit*/
+                    client_emit(1);
+            }
+            None => { /* no data, do not emit */ }
         }
-        None => { /* no data, do not emit */ }
     }
 }
 
@@ -1029,8 +1030,8 @@ enum FirewallRx {
 
 /// Call ethdriver_rx and return packet if possible
 fn firewall_rx() -> FirewallRx {
-    let mut len = 0;
-    let result = unsafe { ethdriver_rx(len) };
+    let mut len: i32 = 0;
+    let result = unsafe { ethdriver_rx(&mut len) };
     if result == -1 {
         let r = FirewallRx::NoData;
         #[cfg(feature = "debug-print")]
@@ -1092,13 +1093,13 @@ fn firewall_rx() -> FirewallRx {
         EthernetProtocol::Ipv4 => {
             #[cfg(feature = "debug-print")]
             println_sel4(format!("Firewall firewall_rx: processing IPv4"));
-            //let mut fragments = None;
-            let mut fragments = unsafe {
+            let mut fragments = None;
+            /*let mut fragments = unsafe {
                 match client_rx_get_fragments_set() {
                     &None => None,
                     &Some(ref cell) => Some(&mut *cell.get()),
                 }
-            };
+            };*/
             match client_rx_process_ipv4(&eth_frame, &mut fragments) {
                 Ok(result) => {
                     #[cfg(feature = "debug-print")]
@@ -1112,17 +1113,17 @@ fn firewall_rx() -> FirewallRx {
                             println_sel4(format!("Firewall firewall_rx: client_rx_process_ipv4 returned ipv4_packet_len = {}
                                                   so it was an UDP packet",ipv4_packet_len));
                             unsafe {
-                                *len = (ETHERNET_FRAME_PAYLOAD + ipv4_packet_len) as i32;
+                                len = (ETHERNET_FRAME_PAYLOAD + ipv4_packet_len) as i32;
                                 let local_buf_ptr =
                                     std::mem::transmute::<*mut c_void, *mut u8>(ethdriver_buf);
                                 let slice =
-                                    std::slice::from_raw_parts_mut(local_buf_ptr, *len as usize);
+                                    std::slice::from_raw_parts_mut(local_buf_ptr, len as usize);
                                 slice[ETHERNET_FRAME_PAYLOAD..]
                                     .clone_from_slice(&RX_IPV4_PACKET_BUFFER[0..ipv4_packet_len]);
                                 #[cfg(feature = "debug-print")]
                                 println_sel4(format!(
                                     "Firewall firewall_rx: Updating buffer, len = {}",
-                                    *len
+                                    len
                                 ));
                                 #[cfg(feature = "debug-print")]
                                 println_sel4(format!(
@@ -1146,7 +1147,7 @@ fn firewall_rx() -> FirewallRx {
                     #[cfg(feature = "debug-print")]
                     println_sel4(format!(
                             "Firewall firewall_rx: client_rx_process_ipv4 returned with error: {}, returning {:?}",
-                            e
+                            e, r
                     ));
                     return r;
                 }
@@ -1157,7 +1158,8 @@ fn firewall_rx() -> FirewallRx {
             let r = FirewallRx::NoData;
             #[cfg(feature = "debug-print")]
             println_sel4(format!(
-                "Firewall firewall_rx: dropping IPV6 traffic, returning {:?}"
+                "Firewall firewall_rx: dropping IPV6 traffic, returning {:?}",
+                r
             ));
             return r;
         }
@@ -1173,9 +1175,9 @@ fn firewall_rx() -> FirewallRx {
 
     // create a vector and return it
     unsafe {
-        let mut data = Vec::with_capacity(*len as usize);
+        let mut data = Vec::with_capacity(len as usize);
         let local_buf_ptr = std::mem::transmute::<*mut c_void, *mut u8>(ethdriver_buf);
-        let slice = std::slice::from_raw_parts_mut(local_buf_ptr, *len as usize);
+        let slice = std::slice::from_raw_parts_mut(local_buf_ptr, len as usize);
         data.extend_from_slice(slice);
         match result {
             0 => {
@@ -1197,7 +1199,7 @@ fn firewall_rx() -> FirewallRx {
 /// To be called from `client_rx`
 /// Coverts client data into `[u8]` and returns it.
 /// The slice can be empty
-fn sel4_ethdriver_rx_transmute<'a>(len: *mut i32) -> &'a [u8] {
+fn sel4_ethdriver_rx_transmute<'a>(len: i32) -> &'a [u8] {
     unsafe {
         if ethdriver_buf.is_null() {
             #[cfg(feature = "debug-print")]
@@ -1208,7 +1210,7 @@ fn sel4_ethdriver_rx_transmute<'a>(len: *mut i32) -> &'a [u8] {
         assert!(!ethdriver_buf.is_null());
         // create a slice of length `len` from the buffer
         let local_buf_ptr = std::mem::transmute::<*mut c_void, *mut u8>(ethdriver_buf);
-        let slice = std::slice::from_raw_parts(local_buf_ptr, *len as usize);
+        let slice = std::slice::from_raw_parts(local_buf_ptr, len as usize);
         slice
     }
 }
