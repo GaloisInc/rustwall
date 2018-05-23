@@ -582,7 +582,7 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
                                 packet.len()
                             ));
                             memcpy(client_buf(1), packet_ptr, packet.len());
-                            if v.len() > 0 {
+                            if packet_buffer.len() > 0 {
                                 /* we have more packets to receive */
                                 #[cfg(feature = "debug-print")]
                                 println_sel4(format!("Firewall client_rx: more data, returning 1"));
