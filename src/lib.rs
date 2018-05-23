@@ -558,30 +558,49 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
         match FIREWALL_RX {
             None => {
                 /* nothing to see here*/
+                #[cfg(feature = "debug-print")]
+                println_sel4(format!("Firewall client_rx: no data, returning -1"));
                 return -1;
             }
-            Some(ref mut v) => {
+            Some(ref mut packet_buffer) => {
                 /* shared data vector was initialized*/
-                if !v.is_empty() {
+                if !packet_buffer.is_empty() {
                     /* we have some data */
-                    match v.pop() {
-                        None => { /* shouldn't be here */ }
+                    match packet_buffer.pop() {
+                        None => {
+                            /* shouldn't be here */
+                            unreachable!();
+                        }
                         Some(packet) => {
                             /* copy data to client buffer */
-                                *len = packet.len() as i32;
-                                let packet_ptr = std::mem::transmute::<*const u8, *const c_void>(packet.as_ptr());
-                                memcpy(client_buf(1), packet_ptr, packet.len());
+                            *len = packet.len() as i32;
+                            let packet_ptr =
+                                std::mem::transmute::<*const u8, *const c_void>(packet.as_ptr());
+                            #[cfg(feature = "debug-print")]
+                            println_sel4(format!(
+                                "Firewall client_rx: copying data from the buffer, {} bytes",
+                                packet.len()
+                            ));
+                            memcpy(client_buf(1), packet_ptr, packet.len());
                             if v.len() > 0 {
                                 /* we have more packets to receive */
+                                #[cfg(feature = "debug-print")]
+                                println_sel4(format!("Firewall client_rx: more data, returning 1"));
                                 return 1;
                             } else {
                                 /* we have only this packet */
+                                #[cfg(feature = "debug-print")]
+                                println_sel4(format!("Firewall client_rx: only one packet, returning 0"));
                                 return 0;
                             }
                         }
                     }
                 }
                 /* no data to return */
+                #[cfg(feature = "debug-print")]
+                println_sel4(format!(
+                    "Firewall client_rx: packet_buffer is empty, returning -1"
+                ));
                 return -1;
             }
         }
@@ -973,8 +992,7 @@ pub extern "C" fn ethdriver_has_data_callback(_badge: u32) {
         _badge
     ));
 
-unsafe {
-
+    unsafe {
         loop {
             match firewall_rx() {
                 FirewallRx::NoData => {
@@ -989,7 +1007,8 @@ unsafe {
                             FIREWALL_RX = Some(vec![packet]);
                         }
                         Some(ref mut packet_buffer) => {
-                            /* add a packet to the buffer */ 
+                            /* add a packet to the buffer */
+
                             packet_buffer.push(packet);
                         }
                     }
@@ -1014,7 +1033,7 @@ unsafe {
         match FIREWALL_RX {
             Some(_) => {
                 /* we have some data in the queeue, emit*/
-                    client_emit(1);
+                client_emit(1);
             }
             None => { /* no data, do not emit */ }
         }
