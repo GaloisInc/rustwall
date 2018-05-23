@@ -590,7 +590,9 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
                             } else {
                                 /* we have only this packet */
                                 #[cfg(feature = "debug-print")]
-                                println_sel4(format!("Firewall client_rx: only one packet, returning 0"));
+                                println_sel4(format!(
+                                    "Firewall client_rx: only one packet, returning 0"
+                                ));
                                 return 0;
                             }
                         }
@@ -1031,9 +1033,12 @@ pub extern "C" fn ethdriver_has_data_callback(_badge: u32) {
         } /* end of loop, no more data*/
 
         match FIREWALL_RX {
-            Some(_) => {
-                /* we have some data in the queeue, emit*/
-                client_emit(1);
+            Some(ref packet_buffer) => {
+                /* check if the packet buffer is empty*/
+                if !packet_buffer.not_empty() {
+                    /* we have some data in the queeue, emit*/
+                    client_emit(1);
+                }
             }
             None => { /* no data, do not emit */ }
         }
