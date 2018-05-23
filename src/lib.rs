@@ -1035,7 +1035,7 @@ pub extern "C" fn ethdriver_has_data_callback(_badge: u32) {
         match FIREWALL_RX {
             Some(ref packet_buffer) => {
                 /* check if the packet buffer is empty*/
-                if !packet_buffer.not_empty() {
+                if !packet_buffer.is_empty() {
                     /* we have some data in the queeue, emit*/
                     client_emit(1);
                 }
