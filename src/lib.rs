@@ -49,8 +49,8 @@ const ETHERNET_FRAME_PAYLOAD: usize = 14;
 const UDP_HEADER_SIZE: usize = 8;
 const IPV4_HEADER_SIZE: usize = 20;
 
-/// Number of supported fragments
-const SUPPORTED_FRAGMENTS: usize = 6;
+/// Number of supported fragments. Make sure you allocate enough heap space!!
+const SUPPORTED_FRAGMENTS: usize = 10;
 
 static mut TX_UDP_PAYLOAD_BUFFER: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE];
 static mut TX_UDP_PACKET_BUFFER: [u8; BUFFER_SIZE + UDP_HEADER_SIZE] =
@@ -1117,13 +1117,13 @@ fn firewall_rx() -> FirewallRx {
         EthernetProtocol::Ipv4 => {
             #[cfg(feature = "debug-print")]
             println_sel4(format!("Firewall firewall_rx: processing IPv4"));
-            let mut fragments = None;
-            /*let mut fragments = unsafe {
+            //let mut fragments = None;
+            let mut fragments = unsafe {
                 match client_rx_get_fragments_set() {
                     &None => None,
                     &Some(ref cell) => Some(&mut *cell.get()),
                 }
-            };*/
+            };
             match client_rx_process_ipv4(&eth_frame, &mut fragments) {
                 Ok(result) => {
                     #[cfg(feature = "debug-print")]
