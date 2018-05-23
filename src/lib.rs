@@ -999,18 +999,35 @@ pub extern "C" fn ethdriver_has_data_callback(_badge: u32) {
             match firewall_rx() {
                 FirewallRx::NoData => {
                     /* no data */
+                    #[cfg(feature = "debug-print")]
+                    println_sel4(format!(
+                        "Firewall ethdriver_has_data_callback: firewall_rx() returned NoData, breaking"
+                    ));
                     break;
                 }
                 FirewallRx::Data(packet) => {
                     /* add exactly one packet and break */
+                    #[cfg(feature = "debug-print")]
+                    println_sel4(format!(
+                        "Firewall ethdriver_has_data_callback: firewall_rx() returned Data, add exactly one packet and break"
+                    ));
                     match FIREWALL_RX {
                         None => {
                             /* Initialize FwRx */
+                            #[cfg(feature = "debug-print")]
+                            println_sel4(format!(
+                            "Firewall ethdriver_has_data_callback: initialize FwRx with packet of length {}",
+                            packet.len()
+                            ));
                             FIREWALL_RX = Some(vec![packet]);
                         }
                         Some(ref mut packet_buffer) => {
                             /* add a packet to the buffer */
-
+                            #[cfg(feature = "debug-print")]
+                            println_sel4(format!(
+                            "Firewall ethdriver_has_data_callback: add packet of length {} to a buffer with len {}",
+                            packet.len(), packet_buffer.len()
+                            ));
                             packet_buffer.push(packet);
                         }
                     }
@@ -1018,13 +1035,27 @@ pub extern "C" fn ethdriver_has_data_callback(_badge: u32) {
                 }
                 FirewallRx::MoreData(packet) => {
                     /* more packets in the queue, add one and keep looping */
+                    #[cfg(feature = "debug-print")]
+                    println_sel4(format!(
+                        "Firewall ethdriver_has_data_callback: firewall_rx() returned MoreData, add  one packet and continue"
+                    ));
                     match FIREWALL_RX {
                         None => {
                             /* Initialize FwRx */
+                            #[cfg(feature = "debug-print")]
+                            println_sel4(format!(
+                            "Firewall ethdriver_has_data_callback: initialize FwRx with packet of length {}",
+                            packet.len()
+                            ));
                             FIREWALL_RX = Some(vec![packet]);
                         }
                         Some(ref mut packet_buffer) => {
                             /* add a packet to the buffer */
+                            #[cfg(feature = "debug-print")]
+                            println_sel4(format!(
+                            "Firewall ethdriver_has_data_callback: add packet of length {} to a buffer with len {}",
+                            packet.len(), packet_buffer.len()
+                            ));
                             packet_buffer.push(packet);
                         }
                     }
@@ -1032,15 +1063,39 @@ pub extern "C" fn ethdriver_has_data_callback(_badge: u32) {
             }
         } /* end of loop, no more data*/
 
+        #[cfg(feature = "debug-print")]
+        println_sel4(format!(
+            "Firewall ethdriver_has_data_callback: loop ended, decide whether to emit"
+        ));
         match FIREWALL_RX {
             Some(ref packet_buffer) => {
                 /* check if the packet buffer is empty*/
+                #[cfg(feature = "debug-print")]
+                println_sel4(format!(
+                    "Firewall ethdriver_has_data_callback: FwRx has some packet buffer, check if it is empty"
+                ));
                 if !packet_buffer.is_empty() {
                     /* we have some data in the queeue, emit*/
+                    #[cfg(feature = "debug-print")]
+                    println_sel4(format!(
+                        "Firewall ethdriver_has_data_callback: packet buffer is not empty, len={}, client emit!",
+                        packet_buffer.len()
+                    ));
                     client_emit(1);
+                } else {
+                    #[cfg(feature = "debug-print")]
+                    println_sel4(format!(
+                        "Firewall ethdriver_has_data_callback: packet buffer is empty, don't emit"
+                    ));
                 }
             }
-            None => { /* no data, do not emit */ }
+            None => {
+                /* no data, do not emit */
+                #[cfg(feature = "debug-print")]
+                println_sel4(format!(
+                    "Firewall ethdriver_has_data_callback: FwRx == None, don't emit"
+                ));
+            }
         }
     }
 }
@@ -1206,14 +1261,24 @@ fn firewall_rx() -> FirewallRx {
         match result {
             0 => {
                 // only one packet was available
+                #[cfg(feature = "debug-print")]
+                println_sel4(format!(
+                    "Firewall firewall_rx: one packet, returning FirewallRx::Data(data)"
+                ));
                 return FirewallRx::Data(data);
             }
             1 => {
                 // more than one packet was available
+                #[cfg(feature = "debug-print")]
+                println_sel4(format!(
+                    "Firewall firewall_rx: more packets, returning FirewallRx::MoreData(data)"
+                ));
                 return FirewallRx::MoreData(data);
             }
             _ => {
                 // this should never happen
+                #[cfg(feature = "debug-print")]
+                println_sel4(format!("Firewall firewall_rx: this should never happen"));
                 unreachable!();
             }
         }
