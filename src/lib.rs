@@ -565,37 +565,28 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
             Some(ref mut packet_buffer) => {
                 /* shared data vector was initialized*/
                 if !packet_buffer.is_empty() {
-                    /* we have some data */
-                    match packet_buffer.pop() {
-                        None => {
-                            /* shouldn't be here */
-                            unreachable!();
-                        }
-                        Some(packet) => {
-                            /* copy data to client buffer */
-                            *len = packet.len() as i32;
-                            let packet_ptr =
-                                std::mem::transmute::<*const u8, *const c_void>(packet.as_ptr());
-                            #[cfg(feature = "debug-print")]
-                            println_sel4(format!(
-                                "Firewall client_rx: copying data from the buffer, {} bytes",
-                                packet.len()
-                            ));
-                            memcpy(client_buf(1), packet_ptr, packet.len());
-                            if packet_buffer.len() > 0 {
-                                /* we have more packets to receive */
-                                #[cfg(feature = "debug-print")]
-                                println_sel4(format!("Firewall client_rx: more data, returning 1"));
-                                return 1;
-                            } else {
-                                /* we have only this packet */
-                                #[cfg(feature = "debug-print")]
-                                println_sel4(format!(
-                                    "Firewall client_rx: only one packet, returning 0"
-                                ));
-                                return 0;
-                            }
-                        }
+                    /* we have some data, get the oldest packet */
+                    let packet = packet_buffer.remove(0);
+                    /* copy data to client buffer */
+                    *len = packet.len() as i32;
+                    let packet_ptr =
+                        std::mem::transmute::<*const u8, *const c_void>(packet.as_ptr());
+                    #[cfg(feature = "debug-print")]
+                    println_sel4(format!(
+                        "Firewall client_rx: copying data from the buffer, {} bytes",
+                        packet.len()
+                    ));
+                    memcpy(client_buf(1), packet_ptr, packet.len());
+                    if packet_buffer.len() > 0 {
+                        /* we have more packets to receive */
+                        #[cfg(feature = "debug-print")]
+                        println_sel4(format!("Firewall client_rx: more data, returning 1"));
+                        return 1;
+                    } else {
+                        /* we have only this packet */
+                        #[cfg(feature = "debug-print")]
+                        println_sel4(format!("Firewall client_rx: only one packet, returning 0"));
+                        return 0;
                     }
                 }
                 /* no data to return */
