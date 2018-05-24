@@ -49,6 +49,9 @@ const ETHERNET_FRAME_PAYLOAD: usize = 14;
 const UDP_HEADER_SIZE: usize = 8;
 const IPV4_HEADER_SIZE: usize = 20;
 
+/// Default max size of the reassembled packet
+const MAX_REASSEMBLED_FRAGMENT_SIZE: usize = 65535;
+
 /// Number of supported fragments. Make sure you allocate enough heap space!!
 const SUPPORTED_FRAGMENTS: usize = 10;
 
@@ -509,42 +512,6 @@ fn client_tx_process_udp<'frame>(ip_repr: Ipv4Repr, ip_payload: &'frame [u8]) ->
     }
 }
 
-/// The only way how to store fragments in the heap without
-/// using any synchronization primitives
-unsafe fn client_rx_get_fragments_set() -> &'static Option<UnsafeCell<FragmentSet<'static>>> {
-    static mut FRAGMENTS: Option<UnsafeCell<FragmentSet>> = None;
-    static mut INIT: bool = false;
-
-    if !INIT {
-        #[cfg(feature = "debug-print")]
-        println_sel4(format!(
-            "Firewall client_rx_get_fragments_set: initializing fragment set"
-        ));
-        let mut fragments = FragmentSet::new(vec![]);
-        for idx in 0..SUPPORTED_FRAGMENTS {
-            #[cfg(feature = "debug-print")]
-            println_sel4(format!(
-                "Firewall client_rx_get_fragments_set: adding fragment {}",
-                idx
-            ));
-            let fragment = FragmentedPacket::new(vec![0; 65535]);
-            fragments.add(fragment);
-        }
-        #[cfg(feature = "debug-print")]
-        println_sel4(format!(
-            "Firewall client_rx_get_fragments_set: Creating unsafe cell"
-        ));
-        let val = UnsafeCell::new(fragments);
-        FRAGMENTS = Some(val);
-        INIT = true;
-    }
-    #[cfg(feature = "debug-print")]
-    println_sel4(format!(
-        "Firewall client_rx_get_fragments_set: Returning fragment set"
-    ));
-    &FRAGMENTS
-}
-
 /// copy `len` data from `ethdriver_buf` into `client_buf`
 /// return 0 if data are received, 1 if more data are in the buffer and `client_rx()`
 /// should be called again, -1 if no data are received (either the packet was dropped,
@@ -598,6 +565,42 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
             }
         }
     }
+}
+
+/// The only way how to store fragments in the heap without
+/// using any synchronization primitives
+unsafe fn client_rx_get_fragments_set() -> &'static Option<UnsafeCell<FragmentSet<'static>>> {
+    static mut FRAGMENTS: Option<UnsafeCell<FragmentSet>> = None;
+    static mut INIT: bool = false;
+
+    if !INIT {
+        #[cfg(feature = "debug-print")]
+        println_sel4(format!(
+            "Firewall client_rx_get_fragments_set: initializing fragment set"
+        ));
+        let mut fragments = FragmentSet::new(vec![]);
+        for idx in 0..SUPPORTED_FRAGMENTS {
+            #[cfg(feature = "debug-print")]
+            println_sel4(format!(
+                "Firewall client_rx_get_fragments_set: adding fragment {}",
+                idx
+            ));
+            let fragment = FragmentedPacket::new(vec![0; MAX_REASSEMBLED_FRAGMENT_SIZE]);
+            fragments.add(fragment);
+        }
+        #[cfg(feature = "debug-print")]
+        println_sel4(format!(
+            "Firewall client_rx_get_fragments_set: Creating unsafe cell"
+        ));
+        let val = UnsafeCell::new(fragments);
+        FRAGMENTS = Some(val);
+        INIT = true;
+    }
+    #[cfg(feature = "debug-print")]
+    println_sel4(format!(
+        "Firewall client_rx_get_fragments_set: Returning fragment set"
+    ));
+    &FRAGMENTS
 }
 
 /// Process an IPv4 fragment
