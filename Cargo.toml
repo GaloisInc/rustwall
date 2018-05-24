@@ -20,4 +20,4 @@ path = "../../../../../projects/smoltcp"
 
 [features]
 "debug-print" = []
-default = ["debug-print"]
+default = []
