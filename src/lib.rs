@@ -1060,6 +1060,13 @@ pub extern "C" fn ethdriver_has_data_callback(_badge: u32) {
                         }
                     }
                 }
+                FirewallRx::MaybeMoreData => {
+                    /* no data now, but keep looping */
+                    #[cfg(feature = "debug-print")]
+                    println_sel4(format!(
+                        "Firewall ethdriver_has_data_callback: got MaybeMoreData, keep looping"
+                    ));
+                }
             }
         } /* end of loop, no more data*/
 
@@ -1105,6 +1112,7 @@ enum FirewallRx {
     NoData,
     Data(Vec<u8>),
     MoreData(Vec<u8>),
+    MaybeMoreData,
 }
 
 /// Call ethdriver_rx and return packet if possible
@@ -1129,7 +1137,12 @@ fn firewall_rx() -> FirewallRx {
             frame
         }
         Err(e) => {
-            let r = FirewallRx::NoData;
+            let r;
+            if result == 1 {
+                r = FirewallRx::MaybeMoreData;
+            } else {
+                r = FirewallRx::NoData;
+            }
             #[cfg(feature = "debug-print")]
             println_sel4(format!(
                 "Firewall firewall_rx: error parsing eth frame: {}, returning {:?}",
@@ -1149,7 +1162,12 @@ fn firewall_rx() -> FirewallRx {
     if !eth_frame.dst_addr().is_broadcast() && !eth_frame.dst_addr().is_multicast()
         && eth_frame.dst_addr() != local_ethernet_addr
     {
-        let r = FirewallRx::NoData;
+        let r;
+        if result == 1 {
+            r = FirewallRx::MaybeMoreData;
+        } else {
+            r = FirewallRx::NoData;
+        }
         #[cfg(feature = "debug-print")]
         println_sel4(format!(
             "Firewall firewall_rx: not the right destination address,
@@ -1222,7 +1240,12 @@ fn firewall_rx() -> FirewallRx {
                 }
                 Err(e) => {
                     /* error during packet processing occured */
-                    let r = FirewallRx::NoData;
+                    let r;
+                    if result == 1 {
+                        r = FirewallRx::MaybeMoreData;
+                    } else {
+                        r = FirewallRx::NoData;
+                    }
                     #[cfg(feature = "debug-print")]
                     println_sel4(format!(
                             "Firewall firewall_rx: client_rx_process_ipv4 returned with error: {}, returning {:?}",
@@ -1234,7 +1257,12 @@ fn firewall_rx() -> FirewallRx {
         }
         EthernetProtocol::Ipv6 => {
             /* Ipv6 traffic is not allowed */
-            let r = FirewallRx::NoData;
+            let r;
+            if result == 1 {
+                r = FirewallRx::MaybeMoreData;
+            } else {
+                r = FirewallRx::NoData;
+            }
             #[cfg(feature = "debug-print")]
             println_sel4(format!(
                 "Firewall firewall_rx: dropping IPV6 traffic, returning {:?}",
