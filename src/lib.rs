@@ -12,7 +12,7 @@ use libc::memcpy;
 
 extern crate smoltcp;
 use smoltcp::wire::{EthernetAddress, EthernetProtocol, EthernetFrame};
-use smoltcp::wire::{IpProtocol, IpAddress, Ipv4Repr, Ipv4Packet};
+use smoltcp::wire::{IpProtocol, IpAddress, Ipv4Repr, Ipv4Packet, Ipv4Address};
 use smoltcp::{Error, Result};
 use smoltcp::phy::ChecksumCapabilities;
 use smoltcp::wire::{UdpRepr, UdpPacket};
@@ -49,11 +49,18 @@ const ETHERNET_FRAME_PAYLOAD: usize = 14;
 const UDP_HEADER_SIZE: usize = 8;
 const IPV4_HEADER_SIZE: usize = 20;
 
-/// Default max size of the reassembled packet
+/// The max size of the reassembled packet
 const MAX_REASSEMBLED_FRAGMENT_SIZE: usize = 65535;
 
 /// Number of supported fragments. Make sure you allocate enough heap space!!
 const SUPPORTED_FRAGMENTS: usize = 10;
+
+/// Max ethernet MTU
+const MTU: usize = 1500;
+
+/// To get max permissible udp packet size, we have to subtract
+/// IPv4 header size from MTU
+const MAX_UDP_PACKET_SIZE: usize = MTU - IPV4_HEADER_SIZE;
 
 static mut TX_UDP_PAYLOAD_BUFFER: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE];
 static mut TX_UDP_PACKET_BUFFER: [u8; BUFFER_SIZE + UDP_HEADER_SIZE] =
@@ -166,6 +173,66 @@ fn get_device_mac() -> EthernetAddress {
     EthernetAddress([b1, b2, b3, b4, b5, b6])
 }
 
+/// Helper function to copy single Ipv4 packet from TX_IPV4_PACKET_BUFFER
+/// to client_buf(1)
+fn client_tx_copy_to_client_buf(ipv4_packet_len: usize, len: &mut i32) {
+    unsafe {
+        *len = (ETHERNET_FRAME_PAYLOAD + ipv4_packet_len) as i32;
+        let local_buf_ptr = std::mem::transmute::<*mut c_void, *mut u8>(client_buf(1));
+        let slice = std::slice::from_raw_parts_mut(local_buf_ptr, *len as usize);
+        slice[ETHERNET_FRAME_PAYLOAD..]
+            .clone_from_slice(&TX_IPV4_PACKET_BUFFER[0..ipv4_packet_len]);
+        #[cfg(feature = "debug-print")]
+        println_sel4(format!(
+            "Firewall client_tx_copy_to_client_buf: Updating buffer, len = {}",
+            *len
+        ));
+        #[cfg(feature = "debug-print")]
+        println_sel4(format!(
+            "Firewall client_tx_copy_to_client_buf: Updating buffer, slice = {:?}",
+            slice
+        ));
+    }
+}
+
+/// Helper function to copy Ipv4 packet to the client_buf and then send it
+fn client_tx_transmit_fragmented_packet(ipv4_packet: Vec<u8>) -> i32 {
+    unsafe {
+        let len = (ETHERNET_FRAME_PAYLOAD + ipv4_packet.len()) as i32;
+        let local_buf_ptr = std::mem::transmute::<*mut c_void, *mut u8>(client_buf(1));
+        let slice = std::slice::from_raw_parts_mut(local_buf_ptr, len as usize);
+        slice[ETHERNET_FRAME_PAYLOAD..].clone_from_slice(&ipv4_packet[..]);
+        #[cfg(feature = "debug-print")]
+        println_sel4(format!(
+            "Firewall client_tx_transmit_fragmented_packet: Updating buffer, len = {}",
+            len
+        ));
+        #[cfg(feature = "debug-print")]
+        println_sel4(format!(
+            "Firewall client_tx_transmit_fragmented_packet: Updating buffer, slice = {:?}",
+            slice
+        ));
+
+        // copy data to ethdriver buffer
+        memcpy(ethdriver_buf, client_buf(1), len as usize);
+
+        // attemp to send
+        ethdriver_tx(len)
+    }
+}
+
+/// Returns a new ID for a set of fragmented packets
+/// Note that this would normally be a regular random
+/// number generator, but sadly, seL4 + Rust doesn't have
+/// the right bindings for it (yet)
+fn client_tx_get_pseudorandom_packet_id() -> u16 {
+    static mut SEED: u16 = 42;
+    unsafe {
+        SEED += 1;
+        SEED
+    }
+}
+
 /// transmit `len` bytes from `client_buf` to `ethdriver_buf`
 /// returns number of transmitted bytes
 /// int client_tx(int len)
@@ -208,29 +275,38 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
                         "Firewall client_tx: client_tx_process_ipv4 returned with OK"
                     ));
                     match result {
-                        Some(ipv4_packet_len) => {
-                            /* copy ipv4 packet data to the client_buf and pass it on */
-                            #[cfg(feature = "debug-print")]
-                            println_sel4(format!("Firewall client_tx: client_tx_process_ipv4 returned ipv4_packet_len = {}
-                                                  so it was an UDP packet",ipv4_packet_len));
-                            unsafe {
-                                len = (ETHERNET_FRAME_PAYLOAD + ipv4_packet_len) as i32;
-                                let local_buf_ptr =
-                                    std::mem::transmute::<*mut c_void, *mut u8>(client_buf(1));
-                                let slice =
-                                    std::slice::from_raw_parts_mut(local_buf_ptr, len as usize);
-                                slice[ETHERNET_FRAME_PAYLOAD..]
-                                    .clone_from_slice(&TX_IPV4_PACKET_BUFFER[0..ipv4_packet_len]);
-                                #[cfg(feature = "debug-print")]
-                                println_sel4(format!(
-                                    "Firewall client_tx: Updating buffer, len = {}",
-                                    len
-                                ));
-                                #[cfg(feature = "debug-print")]
-                                println_sel4(format!(
-                                    "Firewall client_tx: Updating buffer, slice = {:?}",
-                                    slice
-                                ));
+                        Some(client_tx_result) => {
+                            match client_tx_result {
+                                ClientTxResult::SingleIpv4Packet(ipv4_packet_len) => {
+                                    /* copy ipv4 packet data to the client_buf and pass it on */
+                                    #[cfg(feature = "debug-print")]
+                                    println_sel4(format!("Firewall client_tx: client_tx_process_ipv4 returned ipv4_packet_len = {}
+                                        so it was a single UDP packet",
+                                        ipv4_packet_len
+                                    ));
+                                    client_tx_copy_to_client_buf(ipv4_packet_len, &mut len);
+                                }
+                                ClientTxResult::MultipleIpv4Packets(mut ipv4_packet_buffer) => {
+                                    /* iteratively copy data from each fragment and transmit them */
+                                    #[cfg(feature = "debug-print")]
+                                    println_sel4(format!("Firewall client_tx: client_tx_process_ipv4 returned MultiplePackets, processing"
+                                    ));
+                                    let mut res = -1;
+                                    while !ipv4_packet_buffer.is_empty() {
+                                        let packet = ipv4_packet_buffer.remove(0);
+                                        #[cfg(feature = "debug-print")]
+                                        println_sel4(format!("Firewall client_tx: got a packet of len = {}, there are {} packets remaining",
+                                            packet.len(), ipv4_packet_buffer.len()
+                                        ));
+                                        res = client_tx_transmit_fragmented_packet(packet);
+                                        if res == -1 {
+                                            /* if the transmission fails at any point, abort*/
+                                            return res;
+                                        }
+                                    }
+                                    /* all packets sent, return last result code*/
+                                    return res;
+                                }
                             }
                         }
                         None => {
@@ -291,6 +367,116 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
     ret
 }
 
+/// Enum encompassing possible positive results from client_tx_process_ipv4
+#[derive(Debug)]
+enum ClientTxResult {
+    SingleIpv4Packet(usize),
+    MultipleIpv4Packets(Vec<Vec<u8>>),
+}
+
+/// A helper function that splits a large UDP packet into multiple fragmented
+/// Ipv4 packets
+fn client_tx_fragment_large_udp_packet(udp_packet_len: usize, src_addr: Ipv4Address, dst_addr: Ipv4Address) -> Vec<Vec<u8>> {
+    // initialize variables
+    let mut start_len = 0;
+    let mut end_len = MAX_UDP_PACKET_SIZE;
+    let mut fragment_offset = 0;
+    let mut remaining_len = udp_packet_len;
+
+    let packet_id = client_tx_get_pseudorandom_packet_id();
+    let mut ipv4_packet_buffer = vec![];
+    {
+        /* create the first packet */
+        let ip_repr = Ipv4Repr {
+            src_addr: src_addr,
+            dst_addr: dst_addr,
+            protocol: IpProtocol::Udp,
+            payload_len: MAX_UDP_PACKET_SIZE,
+            hop_limit: 64,
+        };
+        let ip_packet = unsafe {
+            let mut ip_packet = Ipv4Packet::new(vec![]);
+            ip_repr.emit(&mut ip_packet, &ChecksumCapabilities::default());
+            ip_packet
+                .payload_mut()
+                .copy_from_slice(&TX_UDP_PACKET_BUFFER[start_len..end_len]);
+            ip_packet.set_ident(packet_id);
+            ip_packet.set_frag_offset(fragment_offset); // first packet
+            ip_packet.set_more_frags(true); // more fragments
+            ip_packet.set_dont_frag(false);
+            ip_packet.fill_checksum();
+            ip_packet
+        };
+        ipv4_packet_buffer.push(ip_packet.into_inner());
+    }
+
+    // update remaining len
+    remaining_len -= MAX_UDP_PACKET_SIZE;
+
+    while remaining_len > MAX_UDP_PACKET_SIZE {
+        /* create middle packets*/
+
+        // update indices
+        start_len += MAX_UDP_PACKET_SIZE;
+        end_len += MAX_UDP_PACKET_SIZE;
+        fragment_offset += MAX_UDP_PACKET_SIZE as u16;
+
+        let ip_repr = Ipv4Repr {
+            src_addr: src_addr,
+            dst_addr: dst_addr,
+            protocol: IpProtocol::Udp,
+            payload_len: MAX_UDP_PACKET_SIZE,
+            hop_limit: 64,
+        };
+        let ip_packet = unsafe {
+            let mut ip_packet = Ipv4Packet::new(vec![]);
+            ip_repr.emit(&mut ip_packet, &ChecksumCapabilities::default());
+            ip_packet
+                .payload_mut()
+                .copy_from_slice(&TX_UDP_PACKET_BUFFER[start_len..end_len]);
+            ip_packet.set_ident(packet_id);
+            ip_packet.set_frag_offset(fragment_offset); // last packet
+            ip_packet.set_more_frags(true); // more fragmentrs
+            ip_packet.set_dont_frag(false);
+            ip_packet.fill_checksum();
+            ip_packet
+        };
+        ipv4_packet_buffer.push(ip_packet.into_inner());
+        // update remaining len
+        remaining_len -= MAX_UDP_PACKET_SIZE;
+    }
+
+    {
+        /* create the last packet */
+        // update indices
+        start_len += MAX_UDP_PACKET_SIZE;
+        fragment_offset += MAX_UDP_PACKET_SIZE as u16;
+        
+        let ip_repr = Ipv4Repr {
+            src_addr: src_addr,
+            dst_addr: dst_addr,
+            protocol: IpProtocol::Udp,
+            payload_len: remaining_len,
+            hop_limit: 64,
+        };
+        let ip_packet = unsafe {
+            let mut ip_packet = Ipv4Packet::new(vec![]);
+            ip_repr.emit(&mut ip_packet, &ChecksumCapabilities::default());
+            ip_packet
+                .payload_mut()
+                .copy_from_slice(&TX_UDP_PACKET_BUFFER[start_len..udp_packet_len]);
+            ip_packet.set_ident(packet_id);
+            ip_packet.set_frag_offset(fragment_offset); // last packet
+            ip_packet.set_more_frags(false); // no more fragmentrs
+            ip_packet.set_dont_frag(false);
+            ip_packet.fill_checksum();
+            ip_packet
+        };
+        ipv4_packet_buffer.push(ip_packet.into_inner());
+    }
+    ipv4_packet_buffer
+}
+
 /// Process ipv4 packet (only when external firewall is allowed)
 /// Returns OK if:
 /// - Ipv4 packet is well formed && of ICMP protocol (passthrough)
@@ -298,7 +484,7 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
 /// otherwise returns error
 fn client_tx_process_ipv4<'frame>(
     eth_frame: &'frame EthernetFrame<&'frame [u8]>,
-) -> Result<Option<usize>> {
+) -> Result<Option<ClientTxResult>> {
     let ipv4_packet = Ipv4Packet::new_checked(eth_frame.payload())?;
     let checksum_caps = ChecksumCapabilities::default();
     let ipv4_repr = Ipv4Repr::parse(&ipv4_packet, &checksum_caps)?;
@@ -344,32 +530,53 @@ fn client_tx_process_ipv4<'frame>(
                         "Firewall client_tx_process_ipv4: keep UDP packet, udp_packet_len={}",
                         udp_packet_len
                     ));
-                    let ip_repr = Ipv4Repr {
-                        src_addr: ipv4_repr.src_addr,
-                        dst_addr: ipv4_repr.dst_addr,
-                        protocol: IpProtocol::Udp,
-                        payload_len: udp_packet_len,
-                        hop_limit: 64,
-                    };
-                    let ip_packet = unsafe {
-                        let mut ip_packet = Ipv4Packet::new(
-                            &mut TX_IPV4_PACKET_BUFFER[0..udp_packet_len + ip_repr.buffer_len()],
-                        );
-                        ip_repr.emit(&mut ip_packet, &ChecksumCapabilities::default());
-                        ip_packet
-                            .payload_mut()
-                            .copy_from_slice(&TX_UDP_PACKET_BUFFER[0..udp_packet_len]);
-                        ip_packet.set_ident(ipv4_packet.ident());
-                        ip_packet.fill_checksum();
-                        ip_packet
-                    };
-                    let r = Ok(Some(ip_packet.total_len() as usize));
-                    #[cfg(feature = "debug-print")]
-                    println_sel4(format!(
-                        "Firewall client_tx_process_ipv4: return IP packet of length = {:?}",
-                        r
-                    ));
-                    return r;
+                    if udp_packet_len > MAX_UDP_PACKET_SIZE {
+                        /* the payload is too big, we have to fragment it*/
+
+                        /* always return an empty vector is the re-fragmentation is disabled (drops the packet) */
+                        #[cfg(feature = "no-fragments")]
+                        return Ok(Some(ClientTxResult::MultipleIpv4Packets(vec![])));
+
+                        /* call a helper function*/
+                        let ipv4_packet_buffer =
+                            client_tx_fragment_large_udp_packet(udp_packet_len, ipv4_repr.src_addr, ipv4_repr.dst_addr);
+
+                        /* return packet buffer */
+                        return Ok(Some(ClientTxResult::MultipleIpv4Packets(
+                            ipv4_packet_buffer,
+                        )));
+                    } else {
+                        /* the payload fits into a single packet*/
+                        let ip_repr = Ipv4Repr {
+                            src_addr: ipv4_repr.src_addr,
+                            dst_addr: ipv4_repr.dst_addr,
+                            protocol: IpProtocol::Udp,
+                            payload_len: udp_packet_len,
+                            hop_limit: 64,
+                        };
+                        let ip_packet = unsafe {
+                            let mut ip_packet = Ipv4Packet::new(
+                                &mut TX_IPV4_PACKET_BUFFER
+                                    [0..udp_packet_len + ip_repr.buffer_len()],
+                            );
+                            ip_repr.emit(&mut ip_packet, &ChecksumCapabilities::default());
+                            ip_packet
+                                .payload_mut()
+                                .copy_from_slice(&TX_UDP_PACKET_BUFFER[0..udp_packet_len]);
+                            ip_packet.set_ident(ipv4_packet.ident()); // keep ident
+                            ip_packet.fill_checksum();
+                            ip_packet
+                        };
+                        let r = Ok(Some(ClientTxResult::SingleIpv4Packet(
+                            ip_packet.total_len() as usize,
+                        )));
+                        #[cfg(feature = "debug-print")]
+                        println_sel4(format!(
+                            "Firewall client_tx_process_ipv4: return IP packet of length = {:?}",
+                            r
+                        ));
+                        return r;
+                    }
                 }
                 Err(e) => {
                     /* drop packet */
@@ -1188,13 +1395,17 @@ fn firewall_rx() -> FirewallRx {
         EthernetProtocol::Ipv4 => {
             #[cfg(feature = "debug-print")]
             println_sel4(format!("Firewall firewall_rx: processing IPv4"));
-            //let mut fragments = None;
             let mut fragments = unsafe {
                 match client_rx_get_fragments_set() {
                     &None => None,
                     &Some(ref cell) => Some(&mut *cell.get()),
                 }
             };
+
+            // to disable reassembly of fragmented packets
+            #[cfg(feature = "no-fragments")]
+            let mut fragments = None;
+
             match client_rx_process_ipv4(&eth_frame, &mut fragments) {
                 Ok(result) => {
                     #[cfg(feature = "debug-print")]
