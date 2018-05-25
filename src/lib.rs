@@ -251,21 +251,25 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
             }
         }
         EthernetProtocol::Ipv6 => {
-            // Ipv6 traffic is not allowed
+            /* Ipv6 traffic is not allowed */
             #[cfg(feature = "debug-print")]
             println_sel4(format!(
                 "Firewall client_tx: dropping IPV6 traffic, returning -1"
             ));
             return -1;
         }
-        // passthrough the traffic
+        EthernetProtocol::Arp => {
+            /* Arp traffic is allowed, pass-through */
+            #[cfg(feature = "debug-print")]
+            println_sel4(format!("Firewall client_tx: passing through ARP traffic"));
+        }
         _ => {
-            /* do nothing */
-
+            /* drop unrecognized protocol */
             #[cfg(feature = "debug-print")]
             println_sel4(format!(
-                "Firewall client_tx: passing through unrecognized eth protocol"
+                "Firewall client_tx: drop unrecognized eth protocol, returning -1"
             ));
+            return -1;
         }
     }
 
@@ -1264,13 +1268,25 @@ fn firewall_rx() -> FirewallRx {
             ));
             return r;
         }
-        // passthrough the traffic
+        EthernetProtocol::Arp => {
+            /* Arp traffic is allowed, pass-through */
+            #[cfg(feature = "debug-print")]
+            println_sel4(format!("Firewall firewall_rx: passing through ARP traffic"));
+        }
         _ => {
-            /* do nothing */
+            /* drop unrecognized protocol */
+            let r;
+            if result == 1 {
+                r = FirewallRx::MaybeMoreData;
+            } else {
+                r = FirewallRx::NoData;
+            }
             #[cfg(feature = "debug-print")]
             println_sel4(format!(
-                "Firewall firewall_rx: passing through unrecognized eth protocol"
+                "Firewall firewall_rx: drop unrecognized eth protocol, returning {:?}",
+                r
             ));
+            return r;
         }
     }
 
