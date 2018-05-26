@@ -247,11 +247,11 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
             println_sel4(format!("Firewall client_tx: got eth_frame = {}", frame));
             frame
         }
-        Err(e) => {
+        Err(_e) => {
             #[cfg(feature = "debug-print")]
             println_sel4(format!(
                 "Firewall client_tx: error parsing eth frame: {}, returning -1",
-                e
+                _e
             ));
             return -1;
         }
@@ -318,10 +318,13 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
                         }
                     }
                 }
-                Err(e) => {
+                Err(_e) => {
                     /* error during packet processing occured */
                     #[cfg(feature = "debug-print")]
-                    println_sel4(format!("Firewall client_tx: client_tx_process_ipv4 returned with error: {}, returning -1",e));
+                    println_sel4(format!(
+                        "Firewall client_tx: client_tx_process_ipv4 returned with error: {}, returning -1",
+                        _e
+                    ));
                     return -1;
                 }
             }
@@ -376,7 +379,11 @@ enum ClientTxResult {
 
 /// A helper function that splits a large UDP packet into multiple fragmented
 /// Ipv4 packets
-fn client_tx_fragment_large_udp_packet(udp_packet_len: usize, src_addr: Ipv4Address, dst_addr: Ipv4Address) -> Vec<Vec<u8>> {
+fn client_tx_fragment_large_udp_packet(
+    udp_packet_len: usize,
+    src_addr: Ipv4Address,
+    dst_addr: Ipv4Address,
+) -> Vec<Vec<u8>> {
     // initialize variables
     let mut start_len = 0;
     let mut end_len = MAX_UDP_PACKET_SIZE;
@@ -451,7 +458,7 @@ fn client_tx_fragment_large_udp_packet(udp_packet_len: usize, src_addr: Ipv4Addr
         // update indices
         start_len += MAX_UDP_PACKET_SIZE;
         fragment_offset += MAX_UDP_PACKET_SIZE as u16;
-        
+
         let ip_repr = Ipv4Repr {
             src_addr: src_addr,
             dst_addr: dst_addr,
@@ -538,8 +545,11 @@ fn client_tx_process_ipv4<'frame>(
                         return Ok(Some(ClientTxResult::MultipleIpv4Packets(vec![])));
 
                         /* call a helper function*/
-                        let ipv4_packet_buffer =
-                            client_tx_fragment_large_udp_packet(udp_packet_len, ipv4_repr.src_addr, ipv4_repr.dst_addr);
+                        let ipv4_packet_buffer = client_tx_fragment_large_udp_packet(
+                            udp_packet_len,
+                            ipv4_repr.src_addr,
+                            ipv4_repr.dst_addr,
+                        );
 
                         /* return packet buffer */
                         return Ok(Some(ClientTxResult::MultipleIpv4Packets(
@@ -790,11 +800,11 @@ unsafe fn client_rx_get_fragments_set() -> &'static Option<UnsafeCell<FragmentSe
             "Firewall client_rx_get_fragments_set: initializing fragment set"
         ));
         let mut fragments = FragmentSet::new(vec![]);
-        for idx in 0..SUPPORTED_FRAGMENTS {
+        for _idx in 0..SUPPORTED_FRAGMENTS {
             #[cfg(feature = "debug-print")]
             println_sel4(format!(
                 "Firewall client_rx_get_fragments_set: adding fragment {}",
-                idx
+                _idx
             ));
             let fragment = FragmentedPacket::new(vec![0; MAX_REASSEMBLED_FRAGMENT_SIZE]);
             fragments.add(fragment);
@@ -877,11 +887,11 @@ fn client_rx_process_ipv4_fragment<'frame, 'r>(
                         "Firewall client_rx_process_ipv4_fragment: adding fragment OK"
                     ));
                 }
-                Err(e) => {
+                Err(_e) => {
                     #[cfg(feature = "debug-print")]
                     println_sel4(format!(
                         "Firewall client_rx_process_ipv4_fragment: adding fragment error {:?}",
-                        e
+                        _e
                     ));
                     fragment.reset();
                     return Err(Error::TooManyFragments);
@@ -1341,7 +1351,7 @@ fn firewall_rx() -> FirewallRx {
             println_sel4(format!("Firewall firewall_rx: got eth_frame = {}", frame));
             frame
         }
-        Err(e) => {
+        Err(_e) => {
             let r;
             if result == 1 {
                 r = FirewallRx::MaybeMoreData;
@@ -1351,7 +1361,7 @@ fn firewall_rx() -> FirewallRx {
             #[cfg(feature = "debug-print")]
             println_sel4(format!(
                 "Firewall firewall_rx: error parsing eth frame: {}, returning {:?}",
-                e, r
+                _e, r
             ));
             return r;
         }
@@ -1364,24 +1374,28 @@ fn firewall_rx() -> FirewallRx {
         "Firewall firewall_rx: local eth addr: {}",
         local_ethernet_addr
     ));
-    if !eth_frame.dst_addr().is_broadcast() && !eth_frame.dst_addr().is_multicast()
-        && eth_frame.dst_addr() != local_ethernet_addr
+    #[cfg(feature = "mac-check")]
     {
-        let r;
-        if result == 1 {
-            r = FirewallRx::MaybeMoreData;
-        } else {
-            r = FirewallRx::NoData;
-        }
-        #[cfg(feature = "debug-print")]
-        println_sel4(format!(
-            "Firewall firewall_rx: not the right destination address,
+        /* check the MAC address of the incoming frame */
+        if !eth_frame.dst_addr().is_broadcast() && !eth_frame.dst_addr().is_multicast()
+            && eth_frame.dst_addr() != local_ethernet_addr
+        {
+            let r;
+            if result == 1 {
+                r = FirewallRx::MaybeMoreData;
+            } else {
+                r = FirewallRx::NoData;
+            }
+            #[cfg(feature = "debug-print")]
+            println_sel4(format!(
+                "Firewall firewall_rx: not the right destination address,
             is dst addr broadcast = {}, is dst addr multicast = {}, returning {:?}",
-            eth_frame.dst_addr().is_broadcast(),
-            eth_frame.dst_addr().is_multicast(),
-            r
-        ));
-        return r;
+                eth_frame.dst_addr().is_broadcast(),
+                eth_frame.dst_addr().is_multicast(),
+                r
+            ));
+            return r;
+        }
     }
 
     #[cfg(feature = "debug-print")]
@@ -1447,7 +1461,7 @@ fn firewall_rx() -> FirewallRx {
                         }
                     }
                 }
-                Err(e) => {
+                Err(_e) => {
                     /* error during packet processing occured */
                     let r;
                     if result == 1 {
@@ -1458,7 +1472,7 @@ fn firewall_rx() -> FirewallRx {
                     #[cfg(feature = "debug-print")]
                     println_sel4(format!(
                             "Firewall firewall_rx: client_rx_process_ipv4 returned with error: {}, returning {:?}",
-                            e, r
+                            _e, r
                     ));
                     return r;
                 }

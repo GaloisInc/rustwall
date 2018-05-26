@@ -21,4 +21,5 @@ path = "../../../../../projects/smoltcp"
 [features]
 "debug-print" = []
 "no-fragments" = []
-default = []
+"mac-check" = []
+default = ["mac-check"]
