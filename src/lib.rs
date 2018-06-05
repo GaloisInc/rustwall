@@ -800,12 +800,6 @@ unsafe fn client_rx_get_fragments_set() -> &'static Option<UnsafeCell<FragmentSe
             "Firewall client_rx_get_fragments_set: initializing fragment set"
         ));
 
-        static mut BUFFER: [u8; MAX_REASSEMBLED_FRAGMENT_SIZE] = [0; MAX_REASSEMBLED_FRAGMENT_SIZE];
-        let frag1: FragmentedPacket =  FragmentedPacket::new(&mut BUFFER[..]);
-        let frags: [FragmentedPacket;1] = [frag1];
-
-        let fragments = FragmentSet::new(frags);
-        /*
         let mut fragments = FragmentSet::new(vec![]);
         for _idx in 0..SUPPORTED_FRAGMENTS {
             #[cfg(feature = "debug-print")]
@@ -816,7 +810,6 @@ unsafe fn client_rx_get_fragments_set() -> &'static Option<UnsafeCell<FragmentSe
             let fragment = FragmentedPacket::new(vec![0; MAX_REASSEMBLED_FRAGMENT_SIZE]);
             fragments.add(fragment);
         }
-        */
 
         #[cfg(feature = "debug-print")]
         println_sel4(format!(
@@ -967,6 +960,11 @@ fn client_rx_process_ipv4<'frame>(
     eth_frame: &'frame EthernetFrame<&'frame [u8]>,
     fragments: &'frame mut Option<&'frame mut FragmentSet<'static>>,
 ) -> Result<Option<usize>> {
+    #[cfg(feature = "debug-print")]
+    println_sel4(format!(
+        "Firewall client_rx_process_ipv4: eth_fram payload len = {}",
+        eth_frame.payload().len()
+    ));
     let ipv4_packet_in = Ipv4Packet::new_checked(eth_frame.payload())?;
 
     let ipv4_packet;
