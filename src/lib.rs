@@ -800,14 +800,11 @@ unsafe fn client_rx_get_fragments_set() -> &'static Option<UnsafeCell<FragmentSe
             "Firewall client_rx_get_fragments_set: initializing fragment set"
         ));
 
-        static mut frag_buf1: [u8; MAX_REASSEMBLED_FRAGMENT_SIZE] = [0; MAX_REASSEMBLED_FRAGMENT_SIZE];
-        static mut frag1: FragmentedPacket = FragmentedPacket::new(frag_buf1);
-        static mut frag_buf2: [u8; MAX_REASSEMBLED_FRAGMENT_SIZE] = [0; MAX_REASSEMBLED_FRAGMENT_SIZE];
-        static mut frag2: FragmentedPacket = FragmentedPacket::new(frag_buf2);
+        static mut BUFFER: [u8; MAX_REASSEMBLED_FRAGMENT_SIZE] = [0; MAX_REASSEMBLED_FRAGMENT_SIZE];
+        let frag1: FragmentedPacket =  FragmentedPacket::new(&mut BUFFER[..]);
+        let frags: [FragmentedPacket;1] = [frag1];
 
-        static mut frags: [_;2] = [frag1,frag2];
-
-        let mut fragments = FragmentSet::new(frags);
+        let fragments = FragmentSet::new(frags);
         /*
         let mut fragments = FragmentSet::new(vec![]);
         for _idx in 0..SUPPORTED_FRAGMENTS {
