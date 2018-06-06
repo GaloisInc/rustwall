@@ -6,6 +6,13 @@
 #![feature(libc)]
 #![feature(lang_items)]
 
+#![feature(alloc_system, global_allocator, allocator_api)]
+extern crate alloc_system;
+use alloc_system::System;
+
+#[global_allocator]
+static A: System = System;
+
 extern crate libc;
 use libc::c_void;
 use libc::memcpy;
