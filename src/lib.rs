@@ -80,6 +80,9 @@ extern "C" {
     fn ethdriver_tx(len: i32) -> i32;
     fn ethdriver_rx(len: *mut i32) -> i32;
 
+    fn ethdriver_buf_crit_lock();
+    fn ethdriver_buf_crit_unlock();
+
     /// For accessing client's buffer
     fn client_buf(cliend_id: u32) -> *mut c_void;
     fn client_emit(badge: u32);
@@ -213,11 +216,14 @@ fn client_tx_transmit_fragmented_packet(ipv4_packet: Vec<u8>) -> i32 {
             slice
         ));
 
+        ethdriver_buf_crit_lock();
         // copy data to ethdriver buffer
         memcpy(ethdriver_buf, client_buf(1), len as usize);
 
         // attemp to send
-        ethdriver_tx(len)
+        let ret = ethdriver_tx(len);
+        ethdriver_buf_crit_unlock();
+        ret
     }
 }
 
@@ -358,10 +364,13 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
         "Firewall client_tx: copying {} bytes from client_buf(1) to ethdriver_buf",
         len
     ));
-    unsafe {
+    let ret = unsafe {
+        ethdriver_buf_crit_lock();
         memcpy(ethdriver_buf, client_buf(1), len as usize);
-    }
-    let ret = unsafe { ethdriver_tx(len) };
+        let ret = ethdriver_tx(len);
+        ethdriver_buf_crit_unlock();
+        ret
+    };
     #[cfg(feature = "debug-print")]
     println_sel4(format!(
         "Firewall client_tx: returing {} after calling ethdriver_tx({})",
@@ -1342,6 +1351,7 @@ enum FirewallRx {
 /// Call ethdriver_rx and return packet if possible
 fn firewall_rx() -> FirewallRx {
     let mut len: i32 = 0;
+    unsafe {ethdriver_buf_crit_lock();}
     let result = unsafe { ethdriver_rx(&mut len) };
     if result == -1 {
         let r = FirewallRx::NoData;
@@ -1350,6 +1360,7 @@ fn firewall_rx() -> FirewallRx {
             "Firewall firewall_rx: error reading ethdriver_rx: {}, returning {:?}",
             result, r
         ));
+        unsafe {ethdriver_buf_crit_unlock();}
         return r;
     }
 
@@ -1372,6 +1383,7 @@ fn firewall_rx() -> FirewallRx {
                 "Firewall firewall_rx: error parsing eth frame: {}, returning {:?}",
                 _e, r
             ));
+            unsafe {ethdriver_buf_crit_unlock();}
             return r;
         }
     };
@@ -1403,6 +1415,7 @@ fn firewall_rx() -> FirewallRx {
                 eth_frame.dst_addr().is_multicast(),
                 r
             ));
+            unsafe {ethdriver_buf_crit_unlock();}
             return r;
         }
     }
@@ -1483,6 +1496,7 @@ fn firewall_rx() -> FirewallRx {
                             "Firewall firewall_rx: client_rx_process_ipv4 returned with error: {}, returning {:?}",
                             _e, r
                     ));
+                    unsafe {ethdriver_buf_crit_unlock();}
                     return r;
                 }
             }
@@ -1500,6 +1514,7 @@ fn firewall_rx() -> FirewallRx {
                 "Firewall firewall_rx: dropping IPV6 traffic, returning {:?}",
                 r
             ));
+            unsafe {ethdriver_buf_crit_unlock();}
             return r;
         }
         EthernetProtocol::Arp => {
@@ -1520,6 +1535,7 @@ fn firewall_rx() -> FirewallRx {
                 "Firewall firewall_rx: drop unrecognized eth protocol, returning {:?}",
                 r
             ));
+            unsafe {ethdriver_buf_crit_unlock();}
             return r;
         }
     }
@@ -1530,6 +1546,9 @@ fn firewall_rx() -> FirewallRx {
         let local_buf_ptr = std::mem::transmute::<*mut c_void, *mut u8>(ethdriver_buf);
         let slice = std::slice::from_raw_parts_mut(local_buf_ptr, len as usize);
         data.extend_from_slice(slice);
+        // extend_from_slice clones the data, so we can release the lock here.
+        ethdriver_buf_crit_unlock();
+
         match result {
             0 => {
                 // only one packet was available
