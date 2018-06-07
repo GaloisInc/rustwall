@@ -53,6 +53,7 @@ const BUFFER_SIZE: usize = 4068;
 /// The index of ethernet frame payload. Also the size of
 /// the ethernet frame header
 const ETHERNET_FRAME_PAYLOAD: usize = 14;
+const ETH_CRC_LEN: usize = 4;
 const UDP_HEADER_SIZE: usize = 8;
 const IPV4_HEADER_SIZE: usize = 20;
 
@@ -508,7 +509,7 @@ fn client_tx_fragment_large_udp_packet(
 fn client_tx_process_ipv4<'frame>(
     eth_frame: &'frame EthernetFrame<&'frame [u8]>,
 ) -> Result<Option<ClientTxResult>> {
-    let ipv4_packet = Ipv4Packet::new_checked(eth_frame.payload())?;
+    let ipv4_packet = shave_crc_from_ipv4(Ipv4Packet::new_checked(eth_frame.payload())?)?;
     let checksum_caps = ChecksumCapabilities::default();
     let ipv4_repr = Ipv4Repr::parse(&ipv4_packet, &checksum_caps)?;
     let ip_payload = ipv4_packet.payload();
@@ -967,6 +968,22 @@ fn client_rx_process_ipv4_fragment<'frame, 'r>(
     }
 }
 
+/// If there are ETH_CRC_LEN extra bytes on the end of our ipv4 packet, this is likely the CRC from the
+/// ethernet frame and need to be removed.
+fn shave_crc_from_ipv4<'frame>(packet: Ipv4Packet<&'frame [u8]> ) -> Result<Ipv4Packet<&'frame [u8]>> {
+    let (payload_len, header_len): (usize, usize) = (packet.payload().len(), packet.header_len() as usize);
+    let payload = packet.into_inner();
+
+    if payload_len + header_len + ETH_CRC_LEN == payload.len() {
+        return Ipv4Packet::new_checked(&payload[..payload.len()-ETH_CRC_LEN]);
+    } else  {
+        // In all other cases we return the packet
+        // This includes cases where the payload.len() will be rounded up to 50 if the payload
+        // was below the minimum payload size supported by ethernet
+        return Ipv4Packet::new_checked(payload);
+    }
+}
+
 /// Process ipv4 packet (only when external firewall is allowed)
 /// Returns OK if:
 /// - Ipv4 packet is well formed && of ICMP protocol (passthrough)
@@ -981,7 +998,7 @@ fn client_rx_process_ipv4<'frame>(
         "Firewall client_rx_process_ipv4: eth_fram payload len = {}",
         eth_frame.payload().len()
     ));
-    let ipv4_packet_in = Ipv4Packet::new_checked(eth_frame.payload())?;
+    let ipv4_packet_in = shave_crc_from_ipv4(Ipv4Packet::new_checked(eth_frame.payload())?)?;
 
     let ipv4_packet;
     if ipv4_packet_in.more_frags() || ipv4_packet_in.frag_offset() > 0 {
