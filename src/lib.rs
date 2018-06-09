@@ -12,14 +12,6 @@ extern crate libc;
 extern crate smoltcp;
 extern crate spin;
 
-use smoltcp::wire::{EthernetAddress, EthernetProtocol, EthernetFrame};
-use smoltcp::wire::{IpProtocol, IpAddress, Ipv4Repr, Ipv4Packet, Ipv4Address};
-use smoltcp::{Error, Result};
-use smoltcp::phy::ChecksumCapabilities;
-use smoltcp::wire::{UdpRepr, UdpPacket};
-use smoltcp::time::Instant;
-use smoltcp::iface::{FragmentSet, FragmentedPacket};
-
 mod constants;
 mod externs;
 mod utils;
@@ -30,23 +22,41 @@ mod utils;
 /// returns -1 if the ethernet driver fails, 0 otherwise
 #[no_mangle]
 pub extern "C" fn client_tx(len: i32) -> i32 {
+    let mut ret = utils::RET_CLIENT_TX.lock();
     let eth_packet = utils::fetch_client_data(len as usize);
 
     // process frame
-    // reassemble/dissassembled
+    match utils::process_ethernet(
+        eth_packet,
+        utils::PACKETS_TX.clone(),
+        utils::FRAGMENTS_TX.clone(),
+        utils::FN_PACKET_OUT.clone(),
+        false, // no need to check MAC
+    ) {
+        Ok(_) => {}
+        Err(_e) => {
+            #[cfg(feature = "debug-print")]
+            println_sel4(format!(
+                "Firewall client_tx: error processing eth_packet: {}",
+                _e
+            ));
+        }
+    }
 
     // send 0 to N packets
-    let mut ret = 0;
     {
+        *ret = 0;
         let mut packets = utils::PACKETS_TX.lock();
         while !packets.is_empty() {
             let eth_packet = packets.remove(0);
             if utils::dispatch_data_to_ethdriver(eth_packet) == -1 {
-                ret = -1;
+                // If enqueue fails, return immediately
+                *ret = -1;
+                break;
             }
         }
     }
-    ret
+    *ret // will do  a bitwise copy
 }
 
 /// copy `len` data from `ethdriver_buf` into `client_buf`
@@ -55,29 +65,63 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
 /// or `clien_rx` was called without any data being available)
 #[no_mangle]
 pub extern "C" fn client_rx(len: *mut i32) -> i32 {
+    let mut ret = utils::RET_CLIENT_RX.lock();
     loop {
         match utils::fetch_data_from_ethdriver() {
             utils::EthdriverRxStatus::NoData => {
                 break;
-            },
+            }
             utils::EthdriverRxStatus::Data(eth_packet) => {
-                // process eth_packet, possibly enqueue to PACKETS_RX
+                // process eth_packet, possibly enqueue to PACKETS_RX and break
+                match utils::process_ethernet(
+                    eth_packet,
+                    utils::PACKETS_RX.clone(),
+                    utils::FRAGMENTS_RX.clone(),
+                    utils::FN_PACKET_IN.clone(),
+                    true, // check the MAC address
+                ) {
+                    Ok(_) => {}
+                    Err(_e) => {
+                        #[cfg(feature = "debug-print")]
+                        println_sel4(format!(
+                            "Firewall client_rx: error processing Data(eth_packet): {}",
+                            _e
+                        ));
+                    }
+                }
                 break;
-            },
+            }
             utils::EthdriverRxStatus::MoreData(eth_packet) => {
-                // process eth_packet, possibly enqueue to PACKETS_RX
-            },
+                // process eth_packet, possibly enqueue to PACKETS_RX and check for more data
+                match utils::process_ethernet(
+                    eth_packet,
+                    utils::PACKETS_RX.clone(),
+                    utils::FRAGMENTS_RX.clone(),
+                    utils::FN_PACKET_IN.clone(),
+                    true, // check the MAC address
+                ) {
+                    Ok(_) => {}
+                    Err(_e) => {
+                        #[cfg(feature = "debug-print")]
+                        println_sel4(format!(
+                            "Firewall client_rx: error processing MoreData(eth_packet): {}",
+                            _e
+                        ));
+                    }
+                }
+            }
             utils::EthdriverRxStatus::MaybeMoreData => {
                 // check for more data
-            },
+            }
         };
     }
 
     {
         let mut packets = utils::PACKETS_RX.lock();
-        match packets.is_empty() {
+        *ret = match packets.is_empty() {
             true => -1,
             false => {
+                // enqueue a single packet
                 let eth_packet = packets.remove(0);
                 let data_len = utils::copy_data_to_client_buf(eth_packet);
                 unsafe {
@@ -89,7 +133,8 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
                     1 // More data
                 }
             }
-        }
+        };
+        *ret // will do  a bitwise copy
     }
 }
 

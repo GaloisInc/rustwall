@@ -2,7 +2,14 @@ use libc::c_void;
 
 extern "C" {
     pub static ethdriver_buf: *mut c_void;
-    pub fn ethdriver_mac(b1: *mut u8, b2: *mut u8, b3: *mut u8, b4: *mut u8, b5: *mut u8, b6: *mut u8);
+    pub fn ethdriver_mac(
+        b1: *mut u8,
+        b2: *mut u8,
+        b3: *mut u8,
+        b4: *mut u8,
+        b5: *mut u8,
+        b6: *mut u8,
+    );
     pub fn ethdriver_tx(len: i32) -> i32;
     pub fn ethdriver_rx(len: *mut i32) -> i32;
 
