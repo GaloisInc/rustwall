@@ -15,13 +15,6 @@ path = "../../../../../projects/smoltcp"
 #git = "https://github.com/GaloisInc/smoltcp"
 #branch =  "firewall"
 
-[dependencies.camkesrust]
-path = "../../../../../tools/camkes/camkesrust"
-
-[dependencies]
-lazy_static = "1.0"
-
-
 [replace]
 "libc:0.2.40" = { git = 'https://github.com/GaloisInc/rs_liblibc.git' }
 

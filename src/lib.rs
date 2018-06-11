@@ -18,11 +18,6 @@ use libc::c_void;
 use libc::memcpy;
 
 extern crate smoltcp;
-extern crate camkesrust;
-#[macro_use]
-extern crate lazy_static;
-
-use camkesrust::Mutex;
 use smoltcp::wire::{EthernetAddress, EthernetProtocol, EthernetFrame};
 use smoltcp::wire::{IpProtocol, IpAddress, Ipv4Repr, Ipv4Packet, Ipv4Address};
 use smoltcp::{Error, Result};
@@ -32,7 +27,7 @@ use smoltcp::time::Instant;
 use smoltcp::iface::{FragmentSet, FragmentedPacket};
 
 use std::cell::UnsafeCell;
- use std::sync::Arc; // OK!
+
 #[allow(dead_code)]
 #[no_mangle]
 extern "C" {
@@ -43,45 +38,6 @@ extern "C" {
 fn println_sel4(s: String) {
     unsafe {
         printf((s + "\n\0").as_ptr() as *const i8);
-    }
-}
-
-/// This will get initialised the first time a thread tries to access the internal data.
-/// lazy_statics use atomic spinlocks to ensure that the structures are only initialised once.
-lazy_static! {
-    static ref DATA: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(vec![1,2,3]).unwrap());
-}
-
-/// This should probably always be where init_allocator is called as pre_init is guaranteed by
-/// camkes to be called by the only thread running while all other threads are blocked.
-#[no_mangle]
-pub extern "C" fn pre_init() {
-    println_sel4(format!("preinit"));
-    unsafe {Mutex::<()>::init_allocator()}.unwrap()
-}
-
-/// Init function for one of our threads
-#[no_mangle]
-pub extern "C" fn client__init() {
-    println_sel4(format!("client__init"));
-    {
-        let mut data = DATA.lock();
-        println_sel4(format!("data = {:?}",*data));
-
-        data.push(12);
-        loop { }
-    }
-}
-
-/// Init function for one of our threads
-#[no_mangle]
-pub extern "C" fn ethdriver_has_data__init() {
-    println_sel4(format!("ethdriver_has_data__init"));
-    {
-        let mut data = DATA.lock();
-        println_sel4(format!("data = {:?}",*data));
-        data.push(11);
-        loop {}
     }
 }
 
