@@ -110,9 +110,6 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
                     }
                 }
             }
-            utils::EthdriverRxStatus::MaybeMoreData => {
-                // check for more data
-            }
         };
     }
 
