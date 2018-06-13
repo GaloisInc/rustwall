@@ -1,13 +1,13 @@
 /// Size of the seL4 buffer for data exchange
 /// can be defined in CAMKES
 /// MTU cannot be large than (BUFFER_SIZE + Eth_header)
-/// Default value is 4096, but should be increased
+/// Default value is 4096
 pub const BUFFER_SIZE: usize = 4096;
 
 /// The max size of the reassembled Ipv4 packet
 /// Should fit the largest expected packet
 /// Default is 65535
-pub const MAX_REASSEMBLED_FRAGMENT_SIZE: usize = BUFFER_SIZE;
+pub const MAX_REASSEMBLED_FRAGMENT_SIZE: usize = 65535;
 
 /// Max size of a reassembled UDP packet, includes the header
 /// Technically also the max Ipv4 payload size
