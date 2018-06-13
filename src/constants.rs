@@ -1,7 +1,8 @@
 /// Size of the seL4 buffer for data exchange
 /// can be defined in CAMKES
 /// MTU cannot be large than (BUFFER_SIZE + Eth_header)
-pub const BUFFER_SIZE: usize = 4096;
+/// Default value is 4096, but should be increased
+pub const BUFFER_SIZE: usize = 65535;
 
 /// The max size of the reassembled Ipv4 packet
 /// Should fit the largest expected packet
@@ -29,3 +30,9 @@ pub const MTU: usize = 1500;
 
 /// Max size of an individual UDP packet
 pub const MTU_UDP: usize = MTU - IPV4_HEADER_SIZE;
+
+/// For managing the extra CRC fields
+pub const ETH_CRC_LEN: usize = 4;
+
+/// Maximum number of packets (up to MTU size) in the packet queue
+pub const MAX_ENQUEUED_PACKETS: usize = 20;

@@ -33,10 +33,11 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
         utils::FN_PACKET_OUT.clone(),
         false, // no need to check MAC
     ) {
-        Ok(_) => {}
+        Ok(_) => {
+        }
         Err(_e) => {
             #[cfg(feature = "debug-print")]
-            println_sel4(format!(
+            externs::println_sel4(format!(
                 "Firewall client_tx: error processing eth_packet: {}",
                 _e
             ));
@@ -69,10 +70,13 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
     loop {
         match utils::fetch_data_from_ethdriver() {
             utils::EthdriverRxStatus::NoData => {
+                #[cfg(feature = "debug-print")]
+                externs::println_sel4(format!("Firewall client_rx: ethdriver Nodata"));
                 break;
             }
             utils::EthdriverRxStatus::Data(eth_packet) => {
-                // process eth_packet, possibly enqueue to PACKETS_RX and break
+                #[cfg(feature = "debug-print")]
+                externs::println_sel4(format!("Firewall client_rx: Data(packet) - process eth_packet, possibly enqueue to PACKETS_RX and break"));
                 match utils::process_ethernet(
                     eth_packet,
                     utils::PACKETS_RX.clone(),
@@ -83,7 +87,7 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
                     Ok(_) => {}
                     Err(_e) => {
                         #[cfg(feature = "debug-print")]
-                        println_sel4(format!(
+                        externs::println_sel4(format!(
                             "Firewall client_rx: error processing Data(eth_packet): {}",
                             _e
                         ));
@@ -92,7 +96,8 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
                 break;
             }
             utils::EthdriverRxStatus::MoreData(eth_packet) => {
-                // process eth_packet, possibly enqueue to PACKETS_RX and check for more data
+                #[cfg(feature = "debug-print")]
+                externs::println_sel4(format!("Firewall client_rx: MoreData(packet) - process eth_packet, possibly enqueue to PACKETS_RX and check for more data"));
                 match utils::process_ethernet(
                     eth_packet,
                     utils::PACKETS_RX.clone(),
@@ -103,7 +108,7 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
                     Ok(_) => {}
                     Err(_e) => {
                         #[cfg(feature = "debug-print")]
-                        println_sel4(format!(
+                        externs::println_sel4(format!(
                             "Firewall client_rx: error processing MoreData(eth_packet): {}",
                             _e
                         ));
@@ -115,8 +120,17 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
 
     {
         let mut packets = utils::PACKETS_RX.lock();
+        #[cfg(feature = "debug-print")]
+        externs::println_sel4(format!(
+            "Firewall client_rx: PACKETS_RX has {} packets",
+            packets.len()
+        ));
         *ret = match packets.is_empty() {
-            true => -1,
+            true => {
+                #[cfg(feature = "debug-print")]
+                externs::println_sel4(format!("Firewall client_rx: packets empty, returning -1"));
+                -1
+            }
             false => {
                 // enqueue a single packet
                 let eth_packet = packets.remove(0);
@@ -125,8 +139,12 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
                     *len = data_len;
                 }
                 if packets.is_empty() {
+                    #[cfg(feature = "debug-print")]
+                    externs::println_sel4(format!("Firewall client_rx: no more data, returning 0"));
                     0 // No more data
                 } else {
+                    #[cfg(feature = "debug-print")]
+                    externs::println_sel4(format!("Firewall client_rx: more data, returning 1"));
                     1 // More data
                 }
             }
@@ -141,7 +159,7 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
 #[no_mangle]
 pub extern "C" fn ethdriver_has_data_callback(_badge: u32) {
     #[cfg(feature = "debug-print")]
-    println_sel4(format!(
+    externs::println_sel4(format!(
         "Firewall ethdriver_has_data_callback: got badge = {}, calling client_emit(1);",
         _badge
     ));

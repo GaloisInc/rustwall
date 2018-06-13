@@ -200,11 +200,11 @@ pub fn fetch_data_from_ethdriver() -> EthdriverRxStatus {
     let status = match ret {
         -1 => EthdriverRxStatus::NoData, // no data available
         0 => {
-            let data = sel4_buffer_fetch(len as usize, client_buf_value());
+            let data = sel4_buffer_fetch(len as usize, ethdriver_buf_value());
             EthdriverRxStatus::Data(data)
         }
         1 => {
-            let data = sel4_buffer_fetch(len as usize, client_buf_value());
+            let data = sel4_buffer_fetch(len as usize, ethdriver_buf_value());
             EthdriverRxStatus::MoreData(data)
         }
         _ => panic!("Unexpected return value from ethdriver_rx"),
@@ -289,24 +289,28 @@ pub fn process_ethernet(
         // Ignore any packets not directed at our hardware address.
         let local_ethernet_addr = get_device_mac();
         #[cfg(feature = "debug-print")]
-        println_sel4(format!(
-            "Firewall process_ethernet: local eth addr: {}",
-            local_ethernet_addr
+        externs::println_sel4(format!(
+            "Firewall process_ethernet: local eth addr: {}, destinatione th address: {}",
+            local_ethernet_addr,
+            eth_frame.dst_addr()
         ));
-        #[cfg(feature = "mac-check")]
+        //#[cfg(feature = "mac-check")]
         {
             // check the MAC address of the incoming frame
             if !eth_frame.dst_addr().is_broadcast() && !eth_frame.dst_addr().is_multicast()
                 && eth_frame.dst_addr() != local_ethernet_addr
             {
-                // The packet wasn't for us, quitely drop it
+                #[cfg(feature = "debug-print")]
+                externs::println_sel4(format!(
+                    "Firewall process_ethernet: The packet wasn't for us, quitely drop it"
+                ));
                 return Ok(());
             }
         }
     }
 
     #[cfg(feature = "debug-print")]
-    println_sel4(format!(
+    externs::println_sel4(format!(
         "Firewall process_ethernet: EthernetProtocol = {}",
         eth_frame.ethertype()
     ));
@@ -314,12 +318,12 @@ pub fn process_ethernet(
     match eth_frame.ethertype() {
         EthernetProtocol::Ipv4 => {
             #[cfg(feature = "debug-print")]
-            println_sel4(format!("Firewall process_ethernet: processing IPv4"));
+            externs::println_sel4(format!("Firewall process_ethernet: processing IPv4"));
             match process_ipv4(eth_frame, fragment_buffer, external_firewall_fn) {
                 Ok(mut packets) => {
                     // enqueue frames
                     let mut buffer = packet_buffer.lock();
-                    while !packets.is_empty() {
+                    while !packets.is_empty() && buffer.len() < constants::MAX_ENQUEUED_PACKETS {
                         let eth_frame = packets.remove(0);
                         buffer.push(eth_frame.into_inner());
                     }
@@ -330,21 +334,24 @@ pub fn process_ethernet(
         EthernetProtocol::Ipv6 => {
             // Ipv6 traffic is not allowed
             #[cfg(feature = "debug-print")]
-            println_sel4(format!("Firewall process_ethernet: dropping IPV6 traffic"));
+            externs::println_sel4(format!("Firewall process_ethernet: dropping IPV6 traffic"));
         }
         EthernetProtocol::Arp => {
             // Arp traffic is allowed, pass-through
             #[cfg(feature = "debug-print")]
-            println_sel4(format!(
+            externs::println_sel4(format!(
                 "process_ethernet client_tx: passing through ARP traffic"
             ));
             // enqueue unchanged frame
-            packet_buffer.lock().push(eth_frame.into_inner());
+            let mut buffer = packet_buffer.lock();
+            if buffer.len() < constants::MAX_ENQUEUED_PACKETS {
+                buffer.push(eth_frame.into_inner());    
+            }
         }
         _ => {
             // drop unrecognized protocol
             #[cfg(feature = "debug-print")]
-            println_sel4(format!(
+            externs::println_sel4(format!(
                 "Firewall process_ethernet: drop unrecognized eth protocol"
             ));
         }
@@ -373,7 +380,6 @@ fn fragment_large_udp_packet(
     let mut ipv4_packet_buffer = vec![];
 
     if remaining_len < end_len {
-        // the payload fits into a single packet
         let ip_repr = Ipv4Repr {
             src_addr: src_addr,
             dst_addr: dst_addr,
@@ -382,8 +388,9 @@ fn fragment_large_udp_packet(
             hop_limit: 64,
         };
         let ip_packet = {
-            let mut ip_packet = Ipv4Packet::new(vec![]);
+            let mut ip_packet = Ipv4Packet::new(vec![0; ip_repr.buffer_len() + udp_packet.len()]);
             ip_repr.emit(&mut ip_packet, &ChecksumCapabilities::default());
+            ip_packet.set_ident(packet_id);
             ip_packet
                 .payload_mut()
                 .copy_from_slice(udp_packet.as_slice());
@@ -406,7 +413,8 @@ fn fragment_large_udp_packet(
                 hop_limit: 64,
             };
             let ip_packet = {
-                let mut ip_packet = Ipv4Packet::new(vec![]);
+                let mut ip_packet =
+                    Ipv4Packet::new(vec![0; ip_repr.buffer_len() + constants::MTU_UDP]);
                 ip_repr.emit(&mut ip_packet, &ChecksumCapabilities::default());
                 ip_packet
                     .payload_mut()
@@ -420,73 +428,93 @@ fn fragment_large_udp_packet(
             };
             ipv4_packet_buffer.push(ip_packet);
         }
-        
-        // update remaining len
-    remaining_len -= constants::MTU_UDP;
 
-    while remaining_len > constants::MTU_UDP {
-        // create middle packets
-
-        // update indices
-        start_len += constants::MTU_UDP;
-        end_len += constants::MTU_UDP;
-        fragment_offset += constants::MTU_UDP as u16;
-
-        let ip_repr = Ipv4Repr {
-            src_addr: src_addr,
-            dst_addr: dst_addr,
-            protocol: IpProtocol::Udp,
-            payload_len: constants::MTU_UDP,
-            hop_limit: 64,
-        };
-        let ip_packet = {
-            let mut ip_packet = Ipv4Packet::new(vec![]);
-            ip_repr.emit(&mut ip_packet, &ChecksumCapabilities::default());
-            ip_packet
-                .payload_mut()
-                .copy_from_slice(&udp_packet[start_len..end_len]);
-            ip_packet.set_ident(packet_id);
-            ip_packet.set_frag_offset(fragment_offset); // last packet
-            ip_packet.set_more_frags(true); // more fragmentrs
-            ip_packet.set_dont_frag(false);
-            ip_packet.fill_checksum();
-            ip_packet
-        };
-        ipv4_packet_buffer.push(ip_packet);
         // update remaining len
         remaining_len -= constants::MTU_UDP;
-    }
 
-    {
-        // create the last packet
-        // update indices
-        start_len += constants::MTU_UDP;
-        fragment_offset += constants::MTU_UDP as u16;
+        while remaining_len > constants::MTU_UDP {
+            // create middle packets
 
-        let ip_repr = Ipv4Repr {
-            src_addr: src_addr,
-            dst_addr: dst_addr,
-            protocol: IpProtocol::Udp,
-            payload_len: remaining_len,
-            hop_limit: 64,
-        };
-        let ip_packet = {
-            let mut ip_packet = Ipv4Packet::new(vec![]);
-            ip_repr.emit(&mut ip_packet, &ChecksumCapabilities::default());
-            ip_packet
-                .payload_mut()
-                .copy_from_slice(&udp_packet[start_len..]);
-            ip_packet.set_ident(packet_id);
-            ip_packet.set_frag_offset(fragment_offset); // last packet
-            ip_packet.set_more_frags(false); // no more fragmentrs
-            ip_packet.set_dont_frag(false);
-            ip_packet.fill_checksum();
-            ip_packet
-        };
-        ipv4_packet_buffer.push(ip_packet);
-    }
+            // update indices
+            start_len += constants::MTU_UDP;
+            end_len += constants::MTU_UDP;
+            fragment_offset += constants::MTU_UDP as u16;
+
+            let ip_repr = Ipv4Repr {
+                src_addr: src_addr,
+                dst_addr: dst_addr,
+                protocol: IpProtocol::Udp,
+                payload_len: constants::MTU_UDP,
+                hop_limit: 64,
+            };
+            let ip_packet = {
+                let mut ip_packet =
+                    Ipv4Packet::new(vec![0; ip_repr.buffer_len() + constants::MTU_UDP]);
+                ip_repr.emit(&mut ip_packet, &ChecksumCapabilities::default());
+                ip_packet
+                    .payload_mut()
+                    .copy_from_slice(&udp_packet[start_len..end_len]);
+                ip_packet.set_ident(packet_id);
+                ip_packet.set_frag_offset(fragment_offset); // last packet
+                ip_packet.set_more_frags(true); // more fragmentrs
+                ip_packet.set_dont_frag(false);
+                ip_packet.fill_checksum();
+                ip_packet
+            };
+            ipv4_packet_buffer.push(ip_packet);
+            // update remaining len
+            remaining_len -= constants::MTU_UDP;
+        }
+
+        {
+            // create the last packet
+            // update indices
+            start_len += constants::MTU_UDP;
+            fragment_offset += constants::MTU_UDP as u16;
+
+            let ip_repr = Ipv4Repr {
+                src_addr: src_addr,
+                dst_addr: dst_addr,
+                protocol: IpProtocol::Udp,
+                payload_len: remaining_len,
+                hop_limit: 64,
+            };
+            let ip_packet = {
+                let mut ip_packet = Ipv4Packet::new(vec![0; ip_repr.buffer_len() + remaining_len]);
+                ip_repr.emit(&mut ip_packet, &ChecksumCapabilities::default());
+                ip_packet
+                    .payload_mut()
+                    .copy_from_slice(&udp_packet[start_len..]);
+                ip_packet.set_ident(packet_id);
+                ip_packet.set_frag_offset(fragment_offset); // last packet
+                ip_packet.set_more_frags(false); // no more fragmentrs
+                ip_packet.set_dont_frag(false);
+                ip_packet.fill_checksum();
+                ip_packet
+            };
+            ipv4_packet_buffer.push(ip_packet);
+        }
     }
     Ok(ipv4_packet_buffer)
+}
+
+/// If there are ETH_CRC_LEN extra bytes on the end of our ipv4 packet, this is likely the CRC from the
+/// ethernet frame and need to be removed.
+fn shave_crc_from_ipv4<'frame>(
+    packet: Ipv4Packet<&'frame [u8]>,
+) -> Result<Ipv4Packet<&'frame [u8]>> {
+    let (payload_len, header_len): (usize, usize) =
+        (packet.payload().len(), packet.header_len() as usize);
+    let payload = packet.into_inner();
+
+    if payload_len + header_len + constants::ETH_CRC_LEN == payload.len() {
+        return Ipv4Packet::new_checked(&payload[..payload.len() - constants::ETH_CRC_LEN]);
+    } else {
+        // In all other cases we return the packet
+        // This includes cases where the payload.len() will be rounded up to 50 if the payload
+        // was below the minimum payload size supported by ethernet
+        return Ipv4Packet::new_checked(payload);
+    }
 }
 
 /// Return a vector of ethernet frames resulting from processing the `eth_frame`
@@ -519,7 +547,7 @@ fn process_ipv4(
     // eth payload contains the payload only, and is to be modified
     let mut eth_payload = {
         let mut payload = vec![];
-        payload.clone_from_slice(&eth_packet[constants::ETHERNET_FRAME_PAYLOAD..]);
+        payload.extend_from_slice(&eth_packet[constants::ETHERNET_FRAME_PAYLOAD..]);
         payload
     };
 
@@ -529,19 +557,20 @@ fn process_ipv4(
     {
         let eth_frame = EthernetFrame::new_checked(&eth_packet)?;
         #[cfg(feature = "debug-print")]
-        println_sel4(format!(
+        externs::println_sel4(format!(
             "Firewall process_ipv4: eth_fram payload len = {}",
             eth_frame.payload().len()
         ));
 
         {
             // process only UDP fragments
-            let ipv4_packet = Ipv4Packet::new_checked(eth_frame.payload())?;
+            let ipv4_packet = shave_crc_from_ipv4(Ipv4Packet::new_checked(eth_frame.payload())?)?;
+            //let ipv4_packet = Ipv4Packet::new_checked(eth_frame.payload())?;
             if (ipv4_packet.more_frags() || ipv4_packet.frag_offset() > 0)
                 && ipv4_packet.protocol() == IpProtocol::Udp
             {
                 #[cfg(feature = "debug-print")]
-                println_sel4(format!("Firewall process_ipv4: fragmented packet detected"));
+                externs::println_sel4(format!("Firewall process_ipv4: fragmented packet detected"));
                 let mut fragments = fragment_buffer.lock();
                 match process_ipv4_fragment(ipv4_packet, timestamp(), &mut fragments)? {
                     Some(assembled_ipv4_payload) => {
@@ -552,12 +581,14 @@ fn process_ipv4(
             }
         }
 
-        let ipv4_packet = Ipv4Packet::new_checked(&eth_payload)?;
+        let ipv4_packet = shave_crc_from_ipv4(Ipv4Packet::new_checked(&eth_payload[..])?)?;
+        //let ipv4_packet = shave_crc_from_ipv4(Ipv4Packet::new_checked(eth_frame.payload())?)?;
+        //let ipv4_packet = Ipv4Packet::new_checked(eth_frame.payload())?;
         let checksum_caps = ChecksumCapabilities::default();
         let ipv4_repr = Ipv4Repr::parse(&ipv4_packet, &checksum_caps)?;
 
         #[cfg(feature = "debug-print")]
-        println_sel4(format!(
+        externs::println_sel4(format!(
             "Firewall process_ipv4: ipv4 protocol = {}",
             ipv4_repr.protocol
         ));
@@ -566,41 +597,52 @@ fn process_ipv4(
             IpProtocol::Icmp => {
                 // passthrough
                 #[cfg(feature = "debug-print")]
-                println_sel4(format!(
+                externs::println_sel4(format!(
                     "Firewall process_ipv4: ICMP protocol, returning unchanged"
                 ));
             }
             IpProtocol::Igmp => {
                 //* passthrough
                 #[cfg(feature = "debug-print")]
-                println_sel4(format!(
+                externs::println_sel4(format!(
                     "Firewall process_ipv4: I protocol, returning unchanged"
                 ));
             }
             IpProtocol::Udp => {
                 // check with external firewall
                 #[cfg(feature = "debug-print")]
-                println_sel4(format!(
+                externs::println_sel4(format!(
                     "Firewall process_ipv4: UDP protocol, parsing further"
                 ));
                 let ident = ipv4_packet.ident();
                 match process_udp(ipv4_repr, ipv4_packet.payload(), external_firewall_fn) {
-                    Ok(udp_packet) => match fragment_large_udp_packet(
-                        udp_packet,
-                        ipv4_packet.src_addr(),
-                        ipv4_packet.dst_addr(),
-                        ident,
-                    ) {
-                        Ok(mut ipv4_packets) => {
-                            ipv4_packet_buffer.append(&mut ipv4_packets);
+                    Ok(udp_packet) => {
+                        #[cfg(feature = "debug-print")]
+                        externs::println_sel4(format!(
+                            "Firewall process_ipv4: UDP packet returned, parsing/fragmenting"
+                        ));
+                        match fragment_large_udp_packet(
+                            udp_packet,
+                            ipv4_packet.src_addr(),
+                            ipv4_packet.dst_addr(),
+                            ident,
+                        ) {
+                            Ok(mut ipv4_packets) => {
+                                #[cfg(feature = "debug-print")]
+                                externs::println_sel4(format!(
+                                    "Firewall process_ipv4: have {} UDP packets, appending buffer",
+                                    ipv4_packets.len()
+                                ));
+                                ipv4_packet_buffer.append(&mut ipv4_packets);
+                            }
+                            Err(e) => return Err(e),
                         }
-                        Err(e) => return Err(e),
-                    },
+                    }
                     Err(e) => {
                         // drop packet
                         let e = Err(e);
                         #[cfg(feature = "debug-print")]
-                        println_sel4(format!(
+                        externs::println_sel4(format!(
                             "Firewall process_ipv4: drop UDP packet, return {:?}",
                             e
                         ));
@@ -612,7 +654,7 @@ fn process_ipv4(
                 // unknown protocol, drop packet
                 let e = Err(Error::Unrecognized);
                 #[cfg(feature = "debug-print")]
-                println_sel4(format!(
+                externs::println_sel4(format!(
                     "Firewall process_ipv4: Unknown protocol, returning error = {:?}",
                     e
                 ));
@@ -622,11 +664,24 @@ fn process_ipv4(
     }
 
     if ipv4_packet_buffer.is_empty() {
-        // no data were changed, simply copy over the original data
+        #[cfg(feature = "debug-print")]
+        externs::println_sel4(format!(
+            "Firewall process_ipv4: no data were changed, simply copy over the original data"
+        ));
         eth_packet_buffer.push(EthernetFrame::new_checked(eth_packet)?);
     } else {
-        // we have 1 to N Ipv4 packets we need to enqueue
+        #[cfg(feature = "debug-print")]
+        externs::println_sel4(format!(
+            "Firewall process_ipv4: we have 1 to N Ipv4 packets we need to enqueue"
+        ));
+        #[cfg(feature = "debug-print")]
+        let mut cnt = 0;
         while !ipv4_packet_buffer.is_empty() {
+            #[cfg(feature = "debug-print")]
+            {
+                cnt += 1;
+                externs::println_sel4(format!("Firewall process_ipv4: enqued {} packets", cnt));
+            }
             let ipv4_packet = ipv4_packet_buffer.remove(0);
             eth_packet.truncate(constants::ETHERNET_FRAME_PAYLOAD);
             eth_packet.append(&mut ipv4_packet.into_inner());
@@ -647,7 +702,7 @@ fn process_ipv4_fragment<'frame, 'r>(
     fragments: &'r mut FragmentSet<'static>,
 ) -> Result<Option<Vec<u8>>> {
     #[cfg(feature = "debug-print")]
-    println_sel4(format!(
+    externs::println_sel4(format!(
         "Firewall process_ipv4_fragment: got a fragment with id = {}",
         ipv4_packet.ident()
     ));
@@ -665,7 +720,7 @@ fn process_ipv4_fragment<'frame, 'r>(
     if fragment.is_empty() {
         // this is a new packet
         #[cfg(feature = "debug-print")]
-        println_sel4(format!("Firewall process_ipv4_fragment: fragment is empty"));
+        externs::println_sel4(format!("Firewall process_ipv4_fragment: fragment is empty"));
         fragment.start(
             ipv4_packet.ident(),
             ipv4_packet.src_addr(),
@@ -676,7 +731,7 @@ fn process_ipv4_fragment<'frame, 'r>(
     if !ipv4_packet.more_frags() {
         // last fragment, remember data length
         #[cfg(feature = "debug-print")]
-        println_sel4(format!(
+        externs::println_sel4(format!(
             "Firewall process_ipv4_fragment: this is the last fragment"
         ));
         fragment
@@ -692,13 +747,13 @@ fn process_ipv4_fragment<'frame, 'r>(
     ) {
         Ok(_) => {
             #[cfg(feature = "debug-print")]
-            println_sel4(format!(
+            externs::println_sel4(format!(
                 "Firewall process_ipv4_fragment: adding fragment OK"
             ));
         }
         Err(_e) => {
             #[cfg(feature = "debug-print")]
-            println_sel4(format!(
+            externs::println_sel4(format!(
                 "Firewall process_ipv4_fragment: adding fragment error {:?}",
                 _e
             ));
@@ -712,14 +767,14 @@ fn process_ipv4_fragment<'frame, 'r>(
         let front = match fragment.front() {
             Some(f) => {
                 #[cfg(feature = "debug-print")]
-                println_sel4(format!(
+                externs::println_sel4(format!(
                     "Firewall process_ipv4_fragment: fragment reassembly Some"
                 ));
                 f
             }
             None => {
                 #[cfg(feature = "debug-print")]
-                println_sel4(format!(
+                externs::println_sel4(format!(
                     "Firewall process_ipv4_fragment: fragment reassebly None, return Ok(None)"
                 ));
                 return Ok(None);
@@ -732,7 +787,7 @@ fn process_ipv4_fragment<'frame, 'r>(
             ipv4_packet.fill_checksum();
         }
         let ret = {
-            let mut ret = vec![];
+            let mut ret = vec![0; front];
             ret.clone_from_slice(fragment.get_buffer(0, front));
             ret
         };
@@ -743,7 +798,7 @@ fn process_ipv4_fragment<'frame, 'r>(
     // not the last fragment
     let r = Ok(None);
     #[cfg(feature = "debug-print")]
-    println_sel4(format!(
+    externs::println_sel4(format!(
         "Firewall process_ipv4_fragment: this wasn't the last fragment, returning {:?}",
         r
     ));
@@ -796,20 +851,19 @@ fn process_udp<'frame>(
 
     // call external firewall
     #[cfg(feature = "debug-print")]
-    println_sel4(format!(
-        "Firewall client_tx_process_udp: calling external firewall.
-        src_addr_byes = {:?},
+    externs::println_sel4(format!(
+        "Firewall process_udp: calling external firewall.
+        src_addr = {},
         udp_packet.src_port = {},
-        dst_addr_bytes = {:?},
+        dst_addr = {},
         udp_packet.dst_port = {},
         udp payload len = {}
         buffer size = {}",
-        src_addr_bytes,
+        ip_repr.src_addr,
         udp_packet.src_port(),
-        dst_addr_bytes,
+        ip_repr.dst_addr,
         udp_packet.dst_port(),
         data_len as u16,
-        data_ptr,
         max_data_len as u16,
     ));
 
@@ -829,15 +883,20 @@ fn process_udp<'frame>(
         udp_data = Vec::from_raw_parts(data_ptr, payload_len as usize, max_data_len);
     }
 
-    if payload_len > 0 {
-        let mut udp_packet_data = vec![0; constants::MAX_UDP_PACKET_SIZE];
+    if payload_len > 0 && payload_len as usize <= constants::MAX_UDP_PACKET_SIZE {
+        #[cfg(feature = "debug-print")]
+        externs::println_sel4(format!(
+            "Firewall process_udp: packet approved, reassembling with payload len = {}",
+            payload_len
+        ));
+        let udp_repr = UdpRepr {
+            src_port: udp_packet.src_port(),
+            dst_port: udp_packet.dst_port(),
+            payload: &udp_data,
+        };
+        let mut udp_packet_data = vec![0; udp_repr.buffer_len()];
         {
-            let udp_repr = UdpRepr {
-                src_port: udp_packet.src_port(),
-                dst_port: udp_packet.dst_port(),
-                payload: &udp_data,
-            };
-            let mut udp_packet = UdpPacket::new_checked(udp_packet_data.as_mut_slice())?;
+            let mut udp_packet = UdpPacket::new(udp_packet_data.as_mut_slice());
             udp_repr.emit(
                 &mut udp_packet,
                 &IpAddress::from(ip_repr.src_addr),
@@ -852,15 +911,14 @@ fn process_udp<'frame>(
 
         let r = Ok(UdpPacket::new_checked(udp_packet_data)?);
         #[cfg(feature = "debug-print")]
-        println_sel4(format!(
-            "Firewall client_tx_process_udp: udp packet created, returning {:?}",
-            r
+        externs::println_sel4(format!(
+            "Firewall process_udp: udp packet created, returning OK"
         ));
         return r;
     } else {
         let e = Err(Error::Dropped);
         #[cfg(feature = "debug-print")]
-        println_sel4(format!(
+        externs::println_sel4(format!(
             "Firewall process_udp: packet dropped, returning {:?}",
             e
         ));

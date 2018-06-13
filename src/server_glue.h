@@ -31,6 +31,16 @@ extern int client_tx(int len);
 extern int client_rx(int *len);
 extern void ethdriver_has_data_callback(seL4_Word badge);
 
+// Mutexes
+extern void ethdriver_buf_lock(void);
+extern void ethdriver_buf_unlock(void);
+extern void client_buf_lock(void);
+extern void client_buf_unlock(void);
+
+extern void * ethdriver_buf;
+extern void *client_buf(seL4_Word client_id);
+
+
 // Local
 int ethdriver_tx(int len);
 int ethdriver_rx(int* len);
@@ -41,7 +51,7 @@ bool ethdriver_init();
 
 int tun_fd;
 char tun_name[IFNAMSIZ];
-char tun_buffer[1500];
+char tun_buffer[65535];
 fd_set set;
 struct timeval timeout;
 int rv;

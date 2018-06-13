@@ -17,8 +17,8 @@ int32_t packet_in(uint32_t src_addr, uint16_t src_port, uint32_t dst_addr,
     uint16_t dst_port, uint16_t payload_len, uint8_t *payload,
     uint16_t max_payload_len)
 {
-  if (dst_port == 6969) {
-    // drop packets going to 6969 port
+  if (dst_port == 6968) {
+    // drop packets going to 6968 port
     return (int32_t)0;
   } else {
     // do nothing and return the original payload length => the packet is approved to be
