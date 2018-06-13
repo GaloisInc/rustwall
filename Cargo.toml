@@ -19,10 +19,11 @@ version = "0.4.8"
 default-features = false
 features = ["proto-ipv4", "proto-ipv6",
   "socket-icmp", "socket-udp", "alloc","fragmentation-ipv4"]
-#path = "../../../../../projects/smoltcp"
-#git = "https://github.com/GaloisInc/smoltcp"
-#branch =  "firewall"
-path = "../smoltcp"
+#path = "../../../../../projects/smoltcp" # seL4 build
+#path = "../smoltcp" # local build
+git = "https://github.com/GaloisInc/smoltcp"
+branch =  "firewall"
+
 
 [replace]
 "libc:0.2.40" = { git = 'https://github.com/GaloisInc/rs_liblibc.git' }
