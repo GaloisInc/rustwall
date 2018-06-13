@@ -2,7 +2,7 @@
 /// can be defined in CAMKES
 /// MTU cannot be large than (BUFFER_SIZE + Eth_header)
 /// Default value is 4096, but should be increased
-pub const BUFFER_SIZE: usize = 65535;
+pub const BUFFER_SIZE: usize = 4096;
 
 /// The max size of the reassembled Ipv4 packet
 /// Should fit the largest expected packet
