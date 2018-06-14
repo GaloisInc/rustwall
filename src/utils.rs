@@ -185,32 +185,42 @@ pub fn dispatch_data_to_ethdriver(data: Vec<u8>) -> i32 {
 /// Possible return values from calling `ethdriver_rx` and subsequent
 /// `sel4_buffer_fetch()`
 #[derive(Debug)]
-pub enum EthdriverRxStatus {
-    NoData,
-    Data(Vec<u8>),
-    MoreData(Vec<u8>),
+pub struct EthdriverRxStatus {
+    finished: bool,
 }
 
-/// Attempt to recieve data from the ethdriver
-pub fn fetch_data_from_ethdriver() -> EthdriverRxStatus {
-    MTX_ETHDRIVER_BUF.lock();
-    let mut len: i32 = 0;
-    let ret = unsafe { externs::ethdriver_rx(&mut len) };
+impl EthdriverRxStatus {
+    pub fn new() -> EthdriverRxStatus {
+        EthdriverRxStatus {finished: false}
+    }
+}
+impl Iterator for EthdriverRxStatus {
 
-    let status = match ret {
-        -1 => EthdriverRxStatus::NoData, // no data available
-        0 => {
-            let data = sel4_buffer_fetch(len as usize, ethdriver_buf_value());
-            EthdriverRxStatus::Data(data)
+    type Item = Vec<u8>;
+    /// Attempt to recieve data from the ethdriver
+    fn next(&mut self) -> Option<Vec<u8>> {
+        if self.finished {
+            return None;
         }
-        1 => {
-            let data = sel4_buffer_fetch(len as usize, ethdriver_buf_value());
-            EthdriverRxStatus::MoreData(data)
-        }
-        _ => panic!("Unexpected return value from ethdriver_rx"),
-    };
-    MTX_ETHDRIVER_BUF.unlock();
-    status
+        MTX_ETHDRIVER_BUF.lock();
+        let mut len: i32 = 0;
+        let ret = unsafe { externs::ethdriver_rx(&mut len) };
+
+        let status = match ret {
+            -1 => None, // no data available
+            e @ 0 ... 1 => { // Data available
+                if let 0 = e {
+                    self.finished = true;  // This is the last packet available
+                }
+                let data = sel4_buffer_fetch(len as usize, ethdriver_buf_value());
+                Some(data)
+
+            }
+            _ => panic!("Unexpected return value from ethdriver_rx"),
+        };
+        MTX_ETHDRIVER_BUF.unlock();
+        status
+    }
 }
 
 /// copy `data` to client_buffer, return the length of the enqueued data

@@ -67,56 +67,25 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
 #[no_mangle]
 pub extern "C" fn client_rx(len: *mut i32) -> i32 {
     let mut ret = utils::RET_CLIENT_RX.lock();
-    loop {
-        match utils::fetch_data_from_ethdriver() {
-            utils::EthdriverRxStatus::NoData => {
+    for eth_packet in utils::EthdriverRxStatus::new() {
+        match utils::process_ethernet(
+            eth_packet,
+            utils::PACKETS_RX.clone(),
+            utils::FRAGMENTS_RX.clone(),
+            utils::FN_PACKET_IN.clone(),
+            true, // check the MAC address
+        ) {
+            Ok(_) => {}
+            Err(_e) => {
                 #[cfg(feature = "debug-print")]
-                externs::println_sel4(format!("Firewall client_rx: ethdriver Nodata"));
-                break;
+                externs::println_sel4(format!(
+                    "Firewall client_rx: error processing Data(eth_packet): {}",
+                    _e
+                ));
             }
-            utils::EthdriverRxStatus::Data(eth_packet) => {
-                #[cfg(feature = "debug-print")]
-                externs::println_sel4(format!("Firewall client_rx: Data(packet) - process eth_packet, possibly enqueue to PACKETS_RX and break"));
-                match utils::process_ethernet(
-                    eth_packet,
-                    utils::PACKETS_RX.clone(),
-                    utils::FRAGMENTS_RX.clone(),
-                    utils::FN_PACKET_IN.clone(),
-                    true, // check the MAC address
-                ) {
-                    Ok(_) => {}
-                    Err(_e) => {
-                        #[cfg(feature = "debug-print")]
-                        externs::println_sel4(format!(
-                            "Firewall client_rx: error processing Data(eth_packet): {}",
-                            _e
-                        ));
-                    }
-                }
-                break;
-            }
-            utils::EthdriverRxStatus::MoreData(eth_packet) => {
-                #[cfg(feature = "debug-print")]
-                externs::println_sel4(format!("Firewall client_rx: MoreData(packet) - process eth_packet, possibly enqueue to PACKETS_RX and check for more data"));
-                match utils::process_ethernet(
-                    eth_packet,
-                    utils::PACKETS_RX.clone(),
-                    utils::FRAGMENTS_RX.clone(),
-                    utils::FN_PACKET_IN.clone(),
-                    true, // check the MAC address
-                ) {
-                    Ok(_) => {}
-                    Err(_e) => {
-                        #[cfg(feature = "debug-print")]
-                        externs::println_sel4(format!(
-                            "Firewall client_rx: error processing MoreData(eth_packet): {}",
-                            _e
-                        ));
-                    }
-                }
-            }
-        };
+        }
     }
+ 
 
     {
         let mut packets = utils::PACKETS_RX.lock();
