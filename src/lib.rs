@@ -50,6 +50,10 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
         let mut packets = utils::PACKETS_TX.lock();
         while !packets.is_empty() {
             let eth_packet = packets.remove(0);
+            #[cfg(feature = "debug-print")]
+            externs::println_sel4(format!(
+                "Firewall client_tx: dispatching ethernet packet to ethdriver and calling ethdriver_tx"
+            ));
             if utils::dispatch_data_to_ethdriver(eth_packet) == -1 {
                 // If enqueue fails, return immediately
                 *ret = -1;

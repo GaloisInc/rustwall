@@ -139,9 +139,9 @@ bool send_and_test_packet(uint8_t* data, int data_len)
     len = i;
   }
 
-  printf("client_tx transmitting %u bytes\n", len);
+  printf("TEST: client_tx transmitting %u bytes\n", len);
   int returnval = client_tx(len);
-  printf("client_tx transmitted %u bytes with return value %i\n", len,
+  printf("TEST: client_tx transmitted %u bytes with return value %i\n", len,
       returnval);
 
   return compare_buffers(data, (uint8_t*) ethdriver_buf, len);
@@ -158,9 +158,10 @@ bool receive_and_test_packet(uint8_t* data, int data_len, int* returnval)
 
   ethdbuf_len = len;
   len = 0;
-  printf("client_rx receiving\n");
+  printf("TEST: client_rx receiving\n");
   *returnval = client_rx(&len);
-  printf("client_rx received %u bytes with return value %i\n", len, *returnval);
+  printf("TEST: client_rx received %u bytes with return value %i\n", len,
+      *returnval);
 
   return compare_buffers(data, (uint8_t*) client_buf(1), len);
 }
@@ -177,38 +178,38 @@ int main()
 
   retval = send_and_test_packet(packet_bytes_ping, sizeof(packet_bytes_ping));
   if (retval == false) {
-    printf(">>>TX: Testing ping: FAILED\n");
+    printf("TEST TX: Testing ping: FAILED\n");
     exit(1);
   } else {
-    printf(">>>TX: Testing ping: OK\n");
+    printf("TEST TX: Testing ping: OK\n");
   }
   printf("\n");
 
   retval = send_and_test_packet(packet_bytes_arp, sizeof(packet_bytes_arp));
   if (retval == false) {
-    printf(">>>TX: Testing ARP: FAILED\n");
+    printf("TEST TX: Testing ARP: FAILED\n");
     exit(1);
   } else {
-    printf(">>>TX: Testing ARP: OK\n");
+    printf("TEST TX: Testing ARP: OK\n");
   }
   printf("\n");
 
   retval = send_and_test_packet(packet_bytes_multicast_report,
       sizeof(packet_bytes_multicast_report));
   if (retval == true) {
-    printf(">>>TX: Testing IPv6: FAILED\n");
+    printf("TEST TX: Testing IPv6: FAILED\n");
     exit(1);
   } else {
-    printf(">>>TX: Testing IPv6: OK\n");
+    printf("TEST TX: Testing IPv6: OK\n");
   }
   printf("\n");
 
   retval = send_and_test_packet(packet_bytes_udp_1, sizeof(packet_bytes_udp_1));
   if (retval == false) {
-    printf(">>>TX: Testing UDP 1: FAILED\n");
+    printf("TEST TX: Testing UDP 1: FAILED\n");
     exit(1);
   } else {
-    printf(">>>TX: Testing UDP 1: OK\n");
+    printf("TEST TX: Testing UDP 1: OK\n");
   }
   printf("\n");
 
@@ -218,13 +219,12 @@ int main()
   retval = send_and_test_packet(packet_bytes_udp_frag3,
       sizeof(packet_bytes_udp_frag3));
   if (retval == false) {
-    printf(">>>TX: Testing UDP frag: FAILED\n");
+    printf("TEST TX: Testing UDP frag: FAILED\n");
     exit(1);
   } else {
-    printf(">>>TX: Testing UDP frag: OK\n");
+    printf("TEST TX: Testing UDP frag: OK\n");
   }
   printf("\n");
-
 
   printf("Testing many fragmented packets without clearing...\n");
   for (int i = 0; i < 20; i++) {
@@ -238,7 +238,56 @@ int main()
     printf("Round %i OK\n", i);
   }
   printf("Done Testing many fragmented packets without clearing...\n");
-  //exit(1);
+
+  // large fragmented packet
+  printf("TEST TX: Testing UDP frag 5k: first\n");
+  send_and_test_packet(packet_bytes_udp_frag_5k_1,
+      sizeof(packet_bytes_udp_frag_5k_1));
+  printf("TEST TX: Testing UDP frag 5k: second\n");
+  send_and_test_packet(packet_bytes_udp_frag_5k_2,
+      sizeof(packet_bytes_udp_frag_5k_2));
+  printf("TEST TX: Testing UDP frag 5k: third\n");
+  send_and_test_packet(packet_bytes_udp_frag_5k_3,
+      sizeof(packet_bytes_udp_frag_5k_3));
+  printf("TEST TX: Testing UDP frag 5k: fourth\n");
+  retval = send_and_test_packet(packet_bytes_udp_frag_5k_4,
+      sizeof(packet_bytes_udp_frag_5k_4));
+  if (retval == false) {
+    printf("TEST TX: Testing UDP frag 5k: FAILED\n");
+    exit(1);
+  } else {
+    printf("TEST TX: Testing UDP frag 5k: OK\n");
+  }
+  printf("\n");
+
+  printf("Testing many large fragmented packets without clearing...\n");
+  for (int i = 0; i < 20; i++) {
+    // fragmented packet
+    printf("TEST TX: Testing UDP frag 5k: first\n");
+    send_and_test_packet(packet_bytes_udp_frag_5k_1,
+        sizeof(packet_bytes_udp_frag_5k_1));
+    printf("TEST TX: Testing UDP frag 5k: second\n");
+    send_and_test_packet(packet_bytes_udp_frag_5k_2,
+        sizeof(packet_bytes_udp_frag_5k_2));
+    printf("TEST TX: Testing UDP frag 5k: third\n");
+    send_and_test_packet(packet_bytes_udp_frag_5k_3,
+        sizeof(packet_bytes_udp_frag_5k_3));
+    printf("TEST TX: Testing UDP frag 5k: fourth\n");
+    retval = send_and_test_packet(packet_bytes_udp_frag_5k_4,
+        sizeof(packet_bytes_udp_frag_5k_4));
+
+    retval = send_and_test_packet(packet_bytes_ping, sizeof(packet_bytes_ping));
+    if (retval == false) {
+      printf("TEST TX: Testing ping: FAILED\n");
+      exit(1);
+    } else {
+      printf("TEST TX: Testing ping: OK\n");
+    }
+    printf("\n");
+
+    printf("Round %i OK\n", i);
+  }
+  printf("Done Testing many large fragmented packets without clearing...\n");
 
   printf("\n\n"
       "RECEIVE TEST"
@@ -248,9 +297,9 @@ int main()
   retval = receive_and_test_packet(packet_bytes_ping, sizeof(packet_bytes_ping),
       &returnval);
   if ((retval == true) && (returnval == 0)) {
-    printf(">>>RX: Testing ping: OK\n");
+    printf("TEST RX: Testing ping: OK\n");
   } else {
-    printf(">>>RX: Testing ping: FAILED\n");
+    printf("TEST RX: Testing ping: FAILED\n");
     exit(1);
   }
   printf("\n");
@@ -258,9 +307,9 @@ int main()
   retval = receive_and_test_packet(packet_bytes_arp, sizeof(packet_bytes_arp),
       &returnval);
   if ((retval == true) && (returnval == 0)) {
-    printf(">>>RX: Testing ARP: OK\n");
+    printf("TEST RX: Testing ARP: OK\n");
   } else {
-    printf(">>>RX: Testing ARP: FAILED\n");
+    printf("TEST RX: Testing ARP: FAILED\n");
     exit(1);
   }
   printf("\n");
@@ -268,10 +317,10 @@ int main()
   retval = receive_and_test_packet(packet_bytes_multicast_report,
       sizeof(packet_bytes_multicast_report), &returnval);
   if ((retval == false) && (returnval == -1)) {
-    printf(">>>RX: Testing IPv6: OK\n");
+    printf("TEST RX: Testing IPv6: OK\n");
   } else {
 
-    printf(">>>RX: Testing IPv6: FAILED\n");
+    printf("TEST RX: Testing IPv6: FAILED\n");
     exit(1);
   }
   printf("\n");
@@ -279,9 +328,9 @@ int main()
   retval = receive_and_test_packet(packet_bytes_udp_1,
       sizeof(packet_bytes_udp_1), &returnval);
   if ((retval == true) && (returnval == 0)) {
-    printf(">>>RX: Testing UDP 1: OK\n");
+    printf("TEST RX: Testing UDP 1: OK\n");
   } else {
-    printf(">>>RX: Testing UDP 1: FAILED\n");
+    printf("TEST RX: Testing UDP 1: FAILED\n");
     exit(1);
   }
   printf("\n");
@@ -290,9 +339,9 @@ int main()
   retval = receive_and_test_packet(packet_bytes_udp_frag1,
       sizeof(packet_bytes_udp_frag1), &returnval);
   if ((retval == false) && (returnval == -1)) {
-    printf(">>>RX: Testing UDP frag 1: OK\n");
+    printf("TEST RX: Testing UDP frag 1: OK\n");
   } else {
-    printf(">>>RX: Testing UDP frag 1: FAILED\n");
+    printf("TEST RX: Testing UDP frag 1: FAILED\n");
     exit(1);
   }
   printf("\n");
@@ -300,9 +349,9 @@ int main()
   retval = receive_and_test_packet(packet_bytes_udp_frag2,
       sizeof(packet_bytes_udp_frag2), &returnval);
   if ((retval == false) && (returnval == -1)) {
-    printf(">>>RX: Testing UDP frag 2: OK\n");
+    printf("TEST RX: Testing UDP frag 2: OK\n");
   } else {
-    printf(">>>RX: Testing UDP frag 2: FAILED\n");
+    printf("TEST RX: Testing UDP frag 2: FAILED\n");
     exit(1);
   }
   printf("\n");
@@ -310,17 +359,17 @@ int main()
   retval = receive_and_test_packet(packet_bytes_udp_frag3,
       sizeof(packet_bytes_udp_frag3), &returnval);
   if (retval == true) {  // TODO
-    printf(">>>RX: Testing UDP frag: FAILED\n");
+    printf("TEST RX: Testing UDP frag: FAILED\n");
     exit(1);
   } else {
-    printf(">>>RX: Testing UDP frag: OK\n");
+    printf("TEST RX: Testing UDP frag: OK\n");
   }
   printf("\n");
 
   retval = receive_and_test_packet(packet_bytes_udp_1,
       sizeof(packet_bytes_udp_1), &returnval);
 
-  printf(">>>RX: draining data\n");
+  printf("TEST RX: draining data\n");
   int len = 0;
   ethdriver_ret = -1;
   returnval = client_rx(&len);
@@ -328,7 +377,7 @@ int main()
   returnval = client_rx(&len);
   returnval = client_rx(&len);
   ethdriver_ret = 0;
-  printf(">>>RX: draining data done\n");
+  printf("TEST RX: draining data done\n");
   printf("\n");
 
   printf("Testing many fragmented packets...\n");
@@ -337,9 +386,9 @@ int main()
     retval = receive_and_test_packet(packet_bytes_udp_frag1,
         sizeof(packet_bytes_udp_frag1), &returnval);
     if ((retval == false) && (returnval == -1)) {
-      printf(">>>RX: Testing UDP frag 1: OK\n");
+      printf("TEST RX: Testing UDP frag 1: OK\n");
     } else {
-      printf(">>>RX: Testing UDP frag 1: FAILED\n");
+      printf("TEST RX: Testing UDP frag 1: FAILED\n");
       exit(1);
     }
     printf("\n");
@@ -347,9 +396,9 @@ int main()
     retval = receive_and_test_packet(packet_bytes_udp_frag2,
         sizeof(packet_bytes_udp_frag2), &returnval);
     if ((retval == false) && (returnval == -1)) {
-      printf(">>>RX: Testing UDP frag 2: OK\n");
+      printf("TEST RX: Testing UDP frag 2: OK\n");
     } else {
-      printf(">>>RX: Testing UDP frag 2: FAILED\n");
+      printf("TEST RX: Testing UDP frag 2: FAILED\n");
       exit(1);
     }
     printf("\n");
@@ -357,14 +406,14 @@ int main()
     retval = receive_and_test_packet(packet_bytes_udp_frag3,
         sizeof(packet_bytes_udp_frag3), &returnval);
     if (retval == true) {  // TODO
-      printf(">>>RX: Testing UDP frag: FAILED\n");
+      printf("TEST RX: Testing UDP frag: FAILED\n");
       exit(1);
     } else {
-      printf(">>>RX: Testing UDP frag: OK\n");
+      printf("TEST RX: Testing UDP frag: OK\n");
     }
     printf("\n");
 
-    printf(">>>RX: draining data\n");
+    printf("TEST RX: draining data\n");
     int len = 0;
     ethdriver_ret = -1;
     returnval = client_rx(&len);
@@ -372,13 +421,81 @@ int main()
     returnval = client_rx(&len);
     returnval = client_rx(&len);
     ethdriver_ret = 0;
-    printf(">>>RX: draining data done\n");
+    printf("TEST RX: draining data done\n");
     printf("\n");
 
     printf("Round %i OK\n", i);
   }
   printf("Done Testing many fragmented packets...\n");
 
+  printf("Testing many fragmented 5k packets...\n");
+  for (int i = 0; i < 20; i++) {
+    // fragmented packet
+    retval = receive_and_test_packet(packet_bytes_udp_frag_5k_2,
+        sizeof(packet_bytes_udp_frag_5k_2), &returnval);
+    if ((retval == false) && (returnval == -1)) {
+      printf("TEST RX: Testing UDP frag 1: OK\n");
+    } else {
+      printf("TEST RX: Testing UDP frag 1: FAILED\n");
+      exit(1);
+    }
+    printf("\n");
+
+    retval = receive_and_test_packet(packet_bytes_udp_frag_5k_1,
+        sizeof(packet_bytes_udp_frag_5k_1), &returnval);
+    if ((retval == false) && (returnval == -1)) {
+      printf("TEST RX: Testing UDP frag 2: OK\n");
+    } else {
+      printf("TEST RX: Testing UDP frag 2: FAILED\n");
+      exit(1);
+    }
+    printf("\n");
+
+    retval = receive_and_test_packet(packet_bytes_udp_frag_5k_4,
+        sizeof(packet_bytes_udp_frag_5k_4), &returnval);
+    if (retval == true) {  // TODO
+      printf("TEST RX: Testing UDP frag: FAILED\n");
+      exit(1);
+    } else {
+      printf("TEST RX: Testing UDP frag: OK\n");
+    }
+    printf("\n");
+
+    retval = receive_and_test_packet(packet_bytes_udp_frag_5k_3,
+        sizeof(packet_bytes_udp_frag_5k_3), &returnval);
+    if (retval == true) {  // TODO
+      printf("TEST RX: Testing UDP frag: FAILED\n");
+      exit(1);
+    } else {
+      printf("TEST RX: Testing UDP frag: OK\n");
+    }
+    printf("\n");
+
+    printf("TEST RX: draining data\n");
+    int len = 0;
+    ethdriver_ret = -1;
+    returnval = client_rx(&len);
+    returnval = client_rx(&len);
+    returnval = client_rx(&len);
+    returnval = client_rx(&len);
+    ethdriver_ret = 0;
+    printf("TEST RX: draining data done\n");
+    printf("\n");
+
+    retval = receive_and_test_packet(packet_bytes_ping,
+        sizeof(packet_bytes_ping), &returnval);
+    if ((retval == true) && (returnval == 0)) {
+      printf("TEST RX: Testing ping: OK\n");
+    } else {
+      printf("TEST RX: Testing ping: FAILED\n");
+      exit(1);
+    }
+    printf("\n");
+
+    printf("Round %i OK\n", i);
+  }
+  printf("Done Testing many fragmented 5k packets...\n");
+  exit(1);
 
   printf("Testing many fragmented packets without clearing...\n");
   for (int i = 0; i < 20; i++) {
