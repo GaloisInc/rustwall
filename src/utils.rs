@@ -122,6 +122,10 @@ lazy_static! {
     /// kludge to prevent reentrancy around client_rx/tx calls
     pub static ref RET_CLIENT_TX: Arc<spin::Mutex<i32>> = Arc::new(spin::Mutex::new(-1));
     pub static ref RET_CLIENT_RX: Arc<spin::Mutex<i32>> = Arc::new(spin::Mutex::new(-1));
+
+    /// Our mac address won't change at runtime, so we will save the value once we know it.
+    pub static ref CLIENT_MAC_ADDRESS:EthernetAddress = get_device_mac();
+
 }
 
 /// A safe wrapper around `client_buf` ptr
@@ -297,7 +301,7 @@ pub fn process_ethernet(
 
     if check_mac {
         // Ignore any packets not directed at our hardware address.
-        let local_ethernet_addr = get_device_mac();
+        let local_ethernet_addr = *CLIENT_MAC_ADDRESS;
         #[cfg(feature = "debug-print")]
         externs::println_sel4(format!(
             "Firewall process_ethernet: local eth addr: {}, destinatione th address: {}",

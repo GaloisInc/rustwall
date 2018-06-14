@@ -148,7 +148,5 @@ pub extern "C" fn client_mac(
     b5: &mut u8,
     b6: &mut u8,
 ) {
-    unsafe {
-        externs::ethdriver_mac(b1, b2, b3, b4, b5, b6);
-    }
+    [b1, b2, b3, b4, b5, b6].iter_mut().zip(utils::CLIENT_MAC_ADDRESS.0.iter()).for_each(|(b,a)| **b = *a)
 }
