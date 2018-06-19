@@ -76,52 +76,54 @@ impl ExternalFirewallWrapper {
 }
 
 /// Declare static mutexes we wish to use
+/// This will get initialised the first time a thread tries to access the internal data.
+/// lazy_statics use atomic spinlocks to ensure that the structures are only initialised once.
 lazy_static! {
     /// client/ethdriver protection
     static ref MTX_ETHDRIVER_BUF: Arc<Mutex> = Arc::new(Mutex::new(externs::ethdriver_buf_lock, externs::ethdriver_buf_unlock));
     static ref MTX_CLIENT_BUF: Arc<Mutex> = Arc::new(Mutex::new(externs::client_buf_lock, externs::client_buf_unlock));
 
     /// a wrapper for `packet_in`
-    pub static ref FN_PACKET_IN: Arc<spin::Mutex<ExternalFirewallWrapper>> = {
+    pub static ref FN_PACKET_IN: Arc<camkesrust::Mutex<ExternalFirewallWrapper>> = {
         let inner = ExternalFirewallWrapper::new(externs::packet_in);
-        Arc::new(spin::Mutex::new(inner))
+        Arc::new(camkesrust::Mutex::new(inner).unwrap())
     };
 
     /// a wrapper for `packet_out`
-    pub static ref FN_PACKET_OUT: Arc<spin::Mutex<ExternalFirewallWrapper>> = {
+    pub static ref FN_PACKET_OUT: Arc<camkesrust::Mutex<ExternalFirewallWrapper>> = {
         let inner = ExternalFirewallWrapper::new(externs::packet_out);
-        Arc::new(spin::Mutex::new(inner))
+        Arc::new(camkesrust::Mutex::new(inner).unwrap())
     };
 
     /// fragments on rx side
-    pub static ref FRAGMENTS_RX: Arc<spin::Mutex<FragmentSet<'static>>> = {
+    pub static ref FRAGMENTS_RX: Arc<camkesrust::Mutex<FragmentSet<'static>>> = {
         let mut fragments = FragmentSet::new(vec![]);
         for _idx in 0..constants::SUPPORTED_FRAGMENTS {
             let fragment = FragmentedPacket::new(vec![0; constants::MAX_REASSEMBLED_FRAGMENT_SIZE]);
             fragments.add(fragment);
         }
-        Arc::new(spin::Mutex::new(fragments))
+        Arc::new(camkesrust::Mutex::new(fragments).unwrap())
     };
 
     /// fragments on tx side
-    pub static ref FRAGMENTS_TX: Arc<spin::Mutex<FragmentSet<'static>>> = {
+    pub static ref FRAGMENTS_TX: Arc<camkesrust::Mutex<FragmentSet<'static>>> = {
         let mut fragments = FragmentSet::new(vec![]);
         for _idx in 0..constants::SUPPORTED_FRAGMENTS {
             let fragment = FragmentedPacket::new(vec![0; constants::MAX_REASSEMBLED_FRAGMENT_SIZE]);
             fragments.add(fragment);
         }
-        Arc::new(spin::Mutex::new(fragments))
+        Arc::new(camkesrust::Mutex::new(fragments).unwrap())
     };
 
     /// enqued eth_frames to be send
-    pub static ref PACKETS_TX: Arc<spin::Mutex<Vec<Vec<u8>>>> = Arc::new(spin::Mutex::new(vec![]));
+    pub static ref PACKETS_TX: Arc<camkesrust::Mutex<Vec<Vec<u8>>>> = Arc::new(camkesrust::Mutex::new(vec![]).unwrap());
 
     /// enqued eth_frames to be passed to the client
-    pub static ref PACKETS_RX: Arc<spin::Mutex<Vec<Vec<u8>>>> = Arc::new(spin::Mutex::new(vec![]));
+    pub static ref PACKETS_RX: Arc<camkesrust::Mutex<Vec<Vec<u8>>>> = Arc::new(camkesrust::Mutex::new(vec![]).unwrap());
 
     /// kludge to prevent reentrancy around client_rx/tx calls
-    pub static ref RET_CLIENT_TX: Arc<spin::Mutex<i32>> = Arc::new(spin::Mutex::new(-1));
-    pub static ref RET_CLIENT_RX: Arc<spin::Mutex<i32>> = Arc::new(spin::Mutex::new(-1));
+    pub static ref RET_CLIENT_TX: Arc<camkesrust::Mutex<i32>> = Arc::new(camkesrust::Mutex::new(-1).unwrap());
+    pub static ref RET_CLIENT_RX: Arc<camkesrust::Mutex<i32>> = Arc::new(camkesrust::Mutex::new(-1).unwrap());
 
     /// Our mac address won't change at runtime, so we will save the value once we know it.
     pub static ref CLIENT_MAC_ADDRESS:EthernetAddress = get_device_mac();
@@ -292,9 +294,9 @@ fn timestamp() -> Instant {
 ///     - other: drop
 pub fn process_ethernet(
     frame: Vec<u8>,
-    packet_buffer: Arc<spin::Mutex<Vec<Vec<u8>>>>,
-    fragment_buffer: Arc<spin::Mutex<FragmentSet<'static>>>,
-    external_firewall_fn: Arc<spin::Mutex<ExternalFirewallWrapper>>,
+    packet_buffer: Arc<camkesrust::Mutex<Vec<Vec<u8>>>>,
+    fragment_buffer: Arc<camkesrust::Mutex<FragmentSet<'static>>>,
+    external_firewall_fn: Arc<camkesrust::Mutex<ExternalFirewallWrapper>>,
     check_mac: bool,
 ) -> Result<()> {
     let eth_frame = EthernetFrame::new_checked(frame)?;
@@ -539,8 +541,8 @@ fn shave_crc_from_ipv4<'frame>(
 ///
 fn process_ipv4(
     eth_frame: EthernetFrame<Vec<u8>>,
-    fragment_buffer: Arc<spin::Mutex<FragmentSet<'static>>>,
-    external_firewall_fn: Arc<spin::Mutex<ExternalFirewallWrapper>>,
+    fragment_buffer: Arc<camkesrust::Mutex<FragmentSet<'static>>>,
+    external_firewall_fn: Arc<camkesrust::Mutex<ExternalFirewallWrapper>>,
 ) -> Result<Vec<EthernetFrame<Vec<u8>>>> {
     // eth packet contains the original eth data
     let mut eth_packet = eth_frame.into_inner();
@@ -757,7 +759,7 @@ fn process_ipv4_fragment<'frame, 'r>(
 fn process_udp<'frame>(
     ip_repr: Ipv4Repr,
     ip_payload: &'frame [u8],
-    external_firewall_fn: Arc<spin::Mutex<ExternalFirewallWrapper>>,
+    external_firewall_fn: Arc<camkesrust::Mutex<ExternalFirewallWrapper>>,
 ) -> Result<UdpPacket<Vec<u8>>> {
     let udp_packet = UdpPacket::new_checked(ip_payload)?;
     let checksum_caps = ChecksumCapabilities::default();

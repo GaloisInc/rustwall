@@ -12,6 +12,8 @@ extern crate libc;
 extern crate smoltcp;
 extern crate spin;
 
+extern crate camkesrust;
+
 mod constants;
 #[macro_use]
 mod externs;
@@ -22,6 +24,16 @@ pub extern "C" fn post_init()  {
     unsafe {externs::set_putchar(externs::putchar_putchar)};
 
 }
+
+/// This should probably always be where init_allocator is called as pre_init is guaranteed by
+/// camkes to be called by the only thread running while all other threads are blocked.
+#[no_mangle]
+pub extern "C" fn pre_init() {
+    debug_print!("preinit");
+    unsafe {camkesrust::Mutex::<()>::init_allocator()}.unwrap()
+}
+
+
 /// transmit `len` bytes from `client_buf` to `ethdriver_buf`
 /// returns number of transmitted bytes
 /// int client_tx(int len)

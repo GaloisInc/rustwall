@@ -15,6 +15,9 @@ features = ["spin_no_std"]
 [dependencies.spin]
 version = "0.4.8"
 
+[dependencies.camkesrust]
+path = "../../../../../tools/camkes/camkesrust"
+
 [dependencies.smoltcp]
 default-features = false
 features = ["proto-ipv4", "proto-ipv6",
