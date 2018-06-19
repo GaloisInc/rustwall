@@ -77,6 +77,9 @@ extern "C" {
         payload: *const u8,
         max_payload_len: u16,
     ) -> i32;
+
+    pub fn putchar_putchar(c: u8);
+    pub fn set_putchar(f: unsafe extern fn(u8)-> ());
 }
 
 #[allow(dead_code)]
