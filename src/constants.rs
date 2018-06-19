@@ -35,4 +35,4 @@ pub const MTU_UDP: usize = MTU - IPV4_HEADER_SIZE;
 pub const ETH_CRC_LEN: usize = 4;
 
 /// Maximum number of packets (up to MTU size) in the packet queue
-pub const MAX_ENQUEUED_PACKETS: usize = 20;
+pub const MAX_ENQUEUED_PACKETS: usize = 1024;
