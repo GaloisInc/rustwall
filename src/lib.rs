@@ -17,6 +17,11 @@ mod constants;
 mod externs;
 mod utils;
 
+#[no_mangle]
+pub extern "C" fn post_init()  {
+    unsafe {externs::set_putchar(externs::putchar_putchar)};
+
+}
 /// transmit `len` bytes from `client_buf` to `ethdriver_buf`
 /// returns number of transmitted bytes
 /// int client_tx(int len)
