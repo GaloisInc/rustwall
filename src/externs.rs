@@ -91,3 +91,15 @@ pub fn println_sel4(s: String) {
         printf((s + "\n\0").as_ptr() as *const i8);
     }
 }
+
+macro_rules! debug_print {
+    ($x:expr) => {
+        #[cfg(feature = "debug-print")]
+        ::externs::println_sel4(format!{$x});
+    };
+    ($x:expr, $($arg:tt)*) => {
+        #[cfg(feature = "debug-print")]
+        ::externs::println_sel4(format!{$x, $($arg)*});
+
+    };
+}

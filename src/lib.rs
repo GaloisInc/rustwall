@@ -13,6 +13,7 @@ extern crate smoltcp;
 extern crate spin;
 
 mod constants;
+#[macro_use]
 mod externs;
 mod utils;
 
@@ -36,11 +37,7 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
         Ok(_) => {
         }
         Err(_e) => {
-            #[cfg(feature = "debug-print")]
-            externs::println_sel4(format!(
-                "Firewall client_tx: error processing eth_packet: {}",
-                _e
-            ));
+            debug_print!("Firewall client_tx: error processing eth_packet: {}", _e);
         }
     }
 
@@ -71,68 +68,31 @@ pub extern "C" fn client_tx(len: i32) -> i32 {
 #[no_mangle]
 pub extern "C" fn client_rx(len: *mut i32) -> i32 {
     let mut ret = utils::RET_CLIENT_RX.lock();
-    loop {
-        match utils::fetch_data_from_ethdriver() {
-            utils::EthdriverRxStatus::NoData => {
-                #[cfg(feature = "debug-print")]
-                externs::println_sel4(format!("Firewall client_rx: ethdriver Nodata"));
-                break;
+    for eth_packet in utils::EthdriverRxStatus::new() {
+        match utils::process_ethernet(
+            eth_packet,
+            utils::PACKETS_RX.clone(),
+            utils::FRAGMENTS_RX.clone(),
+            utils::FN_PACKET_IN.clone(),
+            true, // check the MAC address
+        ) {
+            Ok(_) => {}
+            Err(_e) => {
+                debug_print!("Firewall client_rx: error processing Data(eth_packet): {}", _e);
             }
-            utils::EthdriverRxStatus::Data(eth_packet) => {
-                #[cfg(feature = "debug-print")]
-                externs::println_sel4(format!("Firewall client_rx: Data(packet) - process eth_packet, possibly enqueue to PACKETS_RX and break"));
-                match utils::process_ethernet(
-                    eth_packet,
-                    utils::PACKETS_RX.clone(),
-                    utils::FRAGMENTS_RX.clone(),
-                    utils::FN_PACKET_IN.clone(),
-                    true, // check the MAC address
-                ) {
-                    Ok(_) => {}
-                    Err(_e) => {
-                        #[cfg(feature = "debug-print")]
-                        externs::println_sel4(format!(
-                            "Firewall client_rx: error processing Data(eth_packet): {}",
-                            _e
-                        ));
-                    }
-                }
-                break;
-            }
-            utils::EthdriverRxStatus::MoreData(eth_packet) => {
-                #[cfg(feature = "debug-print")]
-                externs::println_sel4(format!("Firewall client_rx: MoreData(packet) - process eth_packet, possibly enqueue to PACKETS_RX and check for more data"));
-                match utils::process_ethernet(
-                    eth_packet,
-                    utils::PACKETS_RX.clone(),
-                    utils::FRAGMENTS_RX.clone(),
-                    utils::FN_PACKET_IN.clone(),
-                    true, // check the MAC address
-                ) {
-                    Ok(_) => {}
-                    Err(_e) => {
-                        #[cfg(feature = "debug-print")]
-                        externs::println_sel4(format!(
-                            "Firewall client_rx: error processing MoreData(eth_packet): {}",
-                            _e
-                        ));
-                    }
-                }
-            }
-        };
+        }
     }
+ 
 
     {
         let mut packets = utils::PACKETS_RX.lock();
-        #[cfg(feature = "debug-print")]
-        externs::println_sel4(format!(
+        debug_print!(
             "Firewall client_rx: PACKETS_RX has {} packets",
             packets.len()
-        ));
+        );
         *ret = match packets.is_empty() {
             true => {
-                #[cfg(feature = "debug-print")]
-                externs::println_sel4(format!("Firewall client_rx: packets empty, returning -1"));
+                debug_print!("Firewall client_rx: packets empty, returning -1");
                 -1
             }
             false => {
@@ -143,12 +103,10 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
                     *len = data_len;
                 }
                 if packets.is_empty() {
-                    #[cfg(feature = "debug-print")]
-                    externs::println_sel4(format!("Firewall client_rx: no more data, returning 0"));
+                    debug_print!("Firewall client_rx: no more data, returning 0");
                     0 // No more data
                 } else {
-                    #[cfg(feature = "debug-print")]
-                    externs::println_sel4(format!("Firewall client_rx: more data, returning 1"));
+                    debug_print!("Firewall client_rx: more data, returning 1");
                     1 // More data
                 }
             }
@@ -162,11 +120,10 @@ pub extern "C" fn client_rx(len: *mut i32) -> i32 {
 /// We are assuming there is only one client connected to the firewall
 #[no_mangle]
 pub extern "C" fn ethdriver_has_data_callback(_badge: u32) {
-    #[cfg(feature = "debug-print")]
-    externs::println_sel4(format!(
+    debug_print!(
         "Firewall ethdriver_has_data_callback: got badge = {}, calling client_emit(1);",
         _badge
-    ));
+    );
     unsafe {
         externs::client_emit(1);
     }
@@ -183,7 +140,5 @@ pub extern "C" fn client_mac(
     b5: &mut u8,
     b6: &mut u8,
 ) {
-    unsafe {
-        externs::ethdriver_mac(b1, b2, b3, b4, b5, b6);
-    }
+    [b1, b2, b3, b4, b5, b6].iter_mut().zip(utils::CLIENT_MAC_ADDRESS.0.iter()).for_each(|(b,a)| **b = *a)
 }
